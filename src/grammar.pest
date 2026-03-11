@@ -1,0 +1,58 @@
+// ─── Primitives ───
+
+label          = @{ ASCII_ALPHA ~ (ASCII_ALPHANUMERIC | "_" | "-")* }
+directive_name = @{ (ASCII_ALPHANUMERIC | "_")+ }
+
+// ─── Quoted label ───
+
+quoted_label = { "'" ~ label ~ "'" | "\"" ~ label ~ "\"" }
+
+// ─── Inline target parsing (PUSH/POP/PEEK for quote-aware matching) ───
+
+target_label_ref  = { ":" ~ label }
+target_file_label = { target_file_path ~ ":" ~ label }
+// PEEK matches the opening quote character pushed by `quoted_target` (e.g. `'` or `"`).
+// target_file_path: consume any character that is neither the closing quote (!PEEK)
+//   nor a `:label` immediately before the closing quote (!(":" ~ label ~ PEEK)).
+//   The latter stops the path before `:label` so `target_file_label` can capture it.
+// target_file_only: consume any character that is not the closing quote (!PEEK).
+target_file_path  = @{ "//" ~ (!(":" ~ label ~ PEEK) ~ !PEEK ~ ANY)+ }
+target_file_only  = @{ "//" ~ (!PEEK ~ ANY)+ }
+target_inner      = { target_label_ref | target_file_label | target_file_only }
+quoted_target     = { PUSH("'" | "\"") ~ target_inner ~ POP }
+
+// ─── Directive types ───
+
+trailing_comma = _{ WHITE_SPACE* ~ "," ~ WHITE_SPACE* }
+target_single  = { quoted_target }
+target_array   = { "[" ~ WHITE_SPACE* ~ quoted_target ~ (WHITE_SPACE* ~ "," ~ WHITE_SPACE* ~ quoted_target)* ~ trailing_comma? ~ WHITE_SPACE* ~ "]" }
+
+if_change   = { "LINT.IfChange" ~ ("(" ~ WHITE_SPACE* ~ quoted_label ~ WHITE_SPACE* ~ ")")? }
+then_change = { "LINT.ThenChange" ~ WHITE_SPACE* ~ "(" ~ WHITE_SPACE* ~ (target_array | target_single) ~ trailing_comma? ~ WHITE_SPACE* ~ ")" }
+label_start = { "LINT.Label" ~ WHITE_SPACE* ~ "(" ~ WHITE_SPACE* ~ quoted_label ~ WHITE_SPACE* ~ ")" }
+label_end   = { "LINT.EndLabel" }
+
+// Negative lookahead rejects known keywords so incomplete directives produce parse errors.
+unknown_directive = {
+    "LINT." ~ !(("IfChange" | "ThenChange" | "EndLabel" | "Label") ~ !(ASCII_ALPHANUMERIC | "_")) ~ directive_name
+}
+
+// ─── Entry points ───
+
+directive_body = { if_change | then_change | label_start | label_end | unknown_directive }
+directive      = { SOI ~ WHITE_SPACE* ~ directive_body ~ ANY* ~ EOI }
+
+// Comment line rules — one per comment family.
+// Each strips the prefix; comment_body greedily captures everything after it
+// (including closing tokens like */ or -->). This is intentional: the extracted
+// text is re-parsed through the `directive` rule, whose trailing `ANY*` absorbs
+// those suffixes harmlessly.
+comment_body = @{ ANY* }
+line_slash   = { SOI ~ WHITE_SPACE* ~ "//"   ~ comment_body ~ EOI }
+line_block   = { SOI ~ WHITE_SPACE* ~ "/*"   ~ comment_body ~ EOI }
+line_hash    = { SOI ~ WHITE_SPACE* ~ "#"    ~ comment_body ~ EOI }
+line_html    = { SOI ~ WHITE_SPACE* ~ "<!--" ~ comment_body ~ EOI }
+line_dash    = { SOI ~ WHITE_SPACE* ~ "-- "  ~ comment_body ~ EOI }
+line_semi    = { SOI ~ WHITE_SPACE* ~ ";;"   ~ comment_body ~ EOI }
+line_pct     = { SOI ~ WHITE_SPACE* ~ "%"    ~ comment_body ~ EOI }
+line_bang    = { SOI ~ WHITE_SPACE* ~ "!"    ~ comment_body ~ EOI }
