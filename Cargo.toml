@@ -1,6 +1,6 @@
 [package]
 name = "ifttt-lint"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 # ErrorKind::IsADirectory stabilised in 1.83; that is the binding constraint.
 rust-version = "1.83"
