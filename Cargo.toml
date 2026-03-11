@@ -6,6 +6,7 @@ edition = "2021"
 rust-version = "1.83"
 description = "🔗 Enforce atomic cross-file changes via `LINT.IfChange` / `LINT.ThenChange` directives."
 license = "MIT"
+readme = "readme.md"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
