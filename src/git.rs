@@ -40,9 +40,18 @@ pub fn resolve_input(input: &Option<String>) -> Result<DiffInput, String> {
                 parse_no_ifttt_from_commits(&log_range);
                 Ok(DiffInput { diff: d })
             } else {
-                Ok(DiffInput {
-                    diff: read_stdin()?,
-                })
+                let stdin_content = read_stdin()?;
+                if stdin_content.is_empty() {
+                    // No diff piped (e.g. pre-commit hook where stdin is /dev/null).
+                    // Fall back to staged changes so the hook works out of the box.
+                    Ok(DiffInput {
+                        diff: staged_diff()?,
+                    })
+                } else {
+                    Ok(DiffInput {
+                        diff: stdin_content,
+                    })
+                }
             }
         }
     }
@@ -65,6 +74,21 @@ fn read_stdin() -> Result<String, String> {
         .read_to_string(&mut input)
         .map_err(|e| format!("failed to read stdin: {e}"))?;
     Ok(input)
+}
+
+fn staged_diff() -> Result<String, String> {
+    let output = std::process::Command::new("git")
+        .args(["diff", "--cached"])
+        .output()
+        .map_err(|e| format!("failed to run git diff --cached: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("git diff --cached failed: {stderr}"));
+    }
+
+    String::from_utf8(output.stdout)
+        .map_err(|e| format!("git diff --cached output is not UTF-8: {e}"))
 }
 
 fn diff(range: &str) -> Result<String, String> {
