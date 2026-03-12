@@ -18,6 +18,9 @@ pub struct FileChanges {
     /// effectively happened. Use this (not `removed_lines`) when comparing
     /// against new-file ranges (e.g. IfChange/ThenChange line numbers).
     pub removed_new_positions: HashSet<usize>,
+    /// True when the file was deleted in this diff (new path was /dev/null).
+    /// The file no longer exists on disk; no line data is populated.
+    pub deleted: bool,
 }
 
 /// Map of relative file paths to their changes.
@@ -44,8 +47,17 @@ pub fn from_diff(input: &mut dyn Read) -> Result<ChangeMap, String> {
         let new_path = strip_diff_prefix(&p.new.path);
         let old_path = strip_diff_prefix(&p.old.path);
 
-        // Skip deleted files
+        // Track deleted files so callers can do reverse-reference lookups.
         if new_path == "/dev/null" {
+            if old_path != "/dev/null" {
+                result.insert(
+                    old_path.to_string(),
+                    FileChanges {
+                        deleted: true,
+                        ..Default::default()
+                    },
+                );
+            }
             continue;
         }
 

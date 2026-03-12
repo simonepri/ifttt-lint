@@ -7,8 +7,15 @@ pub struct DiffInput {
 }
 
 /// Resolve the input argument into a diff string.
+///
+/// Recognised `--diff` values:
+/// - `-`     — read diff from stdin
+/// - `A...B` / `A..B` — git ref range
+/// - `path`  — read diff from a file on disk
+/// - `None`  — auto-detect git upstream (TTY) or read stdin (piped)
 pub fn resolve_input(input: &Option<String>) -> Result<DiffInput, String> {
     match input.as_deref() {
+        None => resolve_auto(),
         Some("-") => Ok(DiffInput {
             diff: read_stdin()?,
         }),
@@ -32,27 +39,29 @@ pub fn resolve_input(input: &Option<String>) -> Result<DiffInput, String> {
         Some(arg) => Err(format!(
             "'{arg}' is not a file or git ref range (use BASE...HEAD syntax)"
         )),
-        None => {
-            if std::io::stdin().is_terminal() {
-                let range = detect_range()?;
-                let d = diff(&range)?;
-                let log_range = three_dot_to_log_range(&range);
-                parse_no_ifttt_from_commits(&log_range);
-                Ok(DiffInput { diff: d })
-            } else {
-                let stdin_content = read_stdin()?;
-                if stdin_content.is_empty() {
-                    // No diff piped (e.g. pre-commit hook where stdin is /dev/null).
-                    // Fall back to staged changes so the hook works out of the box.
-                    Ok(DiffInput {
-                        diff: staged_diff()?,
-                    })
-                } else {
-                    Ok(DiffInput {
-                        diff: stdin_content,
-                    })
-                }
-            }
+    }
+}
+
+/// Auto-detect: git upstream if TTY, stdin if piped.
+fn resolve_auto() -> Result<DiffInput, String> {
+    if std::io::stdin().is_terminal() {
+        let range = detect_range()?;
+        let d = diff(&range)?;
+        let log_range = three_dot_to_log_range(&range);
+        parse_no_ifttt_from_commits(&log_range);
+        Ok(DiffInput { diff: d })
+    } else {
+        let stdin_content = read_stdin()?;
+        if stdin_content.is_empty() {
+            // No diff piped (e.g. pre-commit hook where stdin is /dev/null).
+            // Fall back to staged changes so the hook works out of the box.
+            Ok(DiffInput {
+                diff: staged_diff()?,
+            })
+        } else {
+            Ok(DiffInput {
+                diff: stdin_content,
+            })
         }
     }
 }

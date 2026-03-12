@@ -84,10 +84,12 @@ def decode_time_coordinates(data: bytes) -> datetime: ...
 ```yaml
 # .pre-commit-config.yaml
 - repo: https://github.com/simonepri/ifttt-lint
-  rev: v0.1.0
+  rev: v0.2.1
   hooks:
     - id: ifttt-lint
 ```
+
+The hook validates the diff against your git upstream and also runs a structural validity check on every staged file, confirming that all `ThenChange` targets and labels exist on disk.
 
 ### GitHub Actions
 
@@ -98,7 +100,7 @@ def decode_time_coordinates(data: bytes) -> datetime: ...
 - name: Lint cross-file changes
   run: |
     cargo install ifttt-lint
-    ifttt-lint origin/${{ github.base_ref }}...HEAD
+    ifttt-lint --diff origin/${{ github.base_ref }}...HEAD
 ```
 
 ### Manual
@@ -106,16 +108,17 @@ def decode_time_coordinates(data: bytes) -> datetime: ...
 ```bash
 cargo install ifttt-lint
 
-ifttt-lint                    # auto-detect git upstream
-ifttt-lint main...HEAD        # explicit ref range
-ifttt-lint diff.patch         # from file
-cat diff.patch | ifttt-lint - # from stdin
-ifttt-lint --scan .           # scan for malformed directives
+ifttt-lint                              # auto-detect git upstream
+ifttt-lint --diff main...HEAD           # explicit ref range
+ifttt-lint --diff diff.patch            # from file
+cat diff.patch | ifttt-lint --diff -    # from stdin
+ifttt-lint src/**/*.rs                  # structural-only (no diff)
+ifttt-lint --diff main...HEAD src/**/*.rs  # diff + structural
 ```
 
 ## Suppressing Findings
 
-When you intentionally skip all `ThenChange` checks for a commit, add `NO_IFTTT=<reason>` to the commit message:
+When you intentionally skip diff-based `ThenChange` checks for a commit, add `NO_IFTTT=<reason>` to the commit message:
 
 ```
 feat: bump flux capacitor to 1.22 gigawatts
@@ -123,12 +126,12 @@ feat: bump flux capacitor to 1.22 gigawatts
 NO_IFTTT=docs will be updated in a follow-up
 ```
 
-In git mode (`ifttt-lint main...HEAD` or auto-detect), the tool parses these tags from commit messages automatically and suppresses all findings for that range.
+In git mode (`ifttt-lint --diff main...HEAD` or auto-detect), the tool parses these tags from commit messages automatically and suppresses diff-based findings for that range. Structural validity checks (from `[FILES]...`) and reverse-lookup for deleted targets still run.
 
 To skip checks when piping a diff, set the env var:
 
 ```bash
-NO_IFTTT="docs will be updated in a follow-up" cat diff.patch | ifttt-lint -
+cat diff.patch | NO_IFTTT="docs will be updated in a follow-up" ifttt-lint --diff -
 ```
 
 To permanently ignore targets, use `--ignore`:
@@ -163,27 +166,24 @@ Labels must start with a letter, followed by letters, digits, underscores, or da
 ## CLI Reference
 
 ```
-ifttt-lint [OPTIONS] [INPUT]
+ifttt-lint [OPTIONS] [FILES]...
 ```
 
 | Argument | Description |
 |---|---|
-| `(none)` | Auto-detect: git upstream if TTY, stdin if piped |
-| `BASE...HEAD` | Git ref range — runs `git diff` and parses `NO_IFTTT` from commits |
-| `file.patch` | Read diff from file |
-| `-` | Read diff from stdin |
+| `FILES...` | Files to validate structurally: checks that every `ThenChange` target and label exists on disk, regardless of whether the file was modified. |
 
 | Option | Description |
 |---|---|
+| `-d, --diff <SPEC>` | Diff source: git ref range (`main...HEAD`), path to a patch file, or `-` for stdin. Default: auto-detect git upstream (TTY) or read stdin (piped) |
 | `--root <PATH>` | Project root for `//` paths. Defaults to git repo root or cwd |
 | `-t, --threads <N>` | Worker thread count (0 = auto, default) |
 | `-i, --ignore <PATTERN>` | Permanently ignore target pattern, repeatable (glob syntax) |
-| `-s, --scan <DIR>` | Scan mode: validate directive syntax in a directory |
 | `-f, --format <FMT>` | Output format: `pretty` (default), `json`, `plain` |
 
 | Environment Variable | Description |
 |---|---|
-| `NO_IFTTT` | When set (any value), suppresses all findings |
+| `NO_IFTTT` | When set (any value), suppresses diff-based findings. Structural validity (`[FILES]...`) and reverse-lookup for deleted targets still run |
 
 | Exit Code | Meaning |
 |---|---|
@@ -211,7 +211,9 @@ Unknown extensions fall back to `//`, `/*`, `#`.
 
 ## Performance
 
-`ifttt-lint` is designed to add negligible overhead to your CI pipeline. In **diff mode** (the default), only files touched by the PR are read and parsed — a typical run with a handful of changed files completes in under 10 ms. Even in **scan mode**, where every file in the repo is validated, it handles thousands of files and tens of thousands of directives in well under a second.
+`ifttt-lint` is designed to add negligible overhead to your CI pipeline. In **diff mode** (the default), only files touched by the PR are read and parsed — a typical run with a handful of changed files completes in under 10 ms. The optional **structural validity pass** (triggered by `[FILES]...`) validates that all targets and labels referenced in the listed files exist on disk, reading only the files actually passed — no full-repo scan required.
+
+When the diff **deletes** (or renames) a file, a **reverse-lookup pass** walks the repo to find surviving files that still reference the deleted target. This is the only scenario that triggers a full-repo walk. If the deleted file had no LINT directives, the two-stage substring filter ensures essentially zero extra work: no surviving file will mention that path in a `ThenChange`. The walk runs once (not once per deleted file): a single pass collects all files, and two cheap substring filters (`LINT.` then any deleted path) skip the vast majority before the full PEG parse. Files already parsed in earlier passes reuse their cached directives and skip the disk read entirely. The walk uses `ignore::WalkBuilder` which respects `.gitignore` but reads file content directly (it does not leverage git's pre-built index for content grep).
 
 This is possible because the tool skips files that don't contain `LINT.` directives (a simple substring check), parses directive syntax with a compiled [PEG grammar](src/grammar.pest), parallelizes file I/O across cores with [rayon](https://crates.io/crates/rayon), and uses sorted line indices with binary search for efficient range-overlap queries during validation.
 
@@ -220,19 +222,19 @@ Benchmarks run on every CI push — see the [latest run](../../actions) for exac
 ## Pipeline
 
 ```
-diff / git range
-       │
-       ▼
+diff / git range        [FILES]... (optional)
+       │                       │
+       ▼                       ▼
  ┌───────────┐  changes   ┌───────────┐  findings   ┌──────────┐
  │   parse   │ ─────────▶ │   check   │ ──────────▶ │  report  │
  └───────────┘            └─────┬─────┘             └──────────┘
       (1)                   (2) │                      (3)
                           reads & parses files
-                          (changed + targets)
+                          (changed + targets + listed)
 ```
 
 1. **Parse the diff** — extract which line numbers changed in each file.
-2. **Check targets** — find `LINT.IfChange` / `LINT.ThenChange` blocks in changed files and verify every referenced file (or labeled region) was also modified.
+2. **Check targets** — for each triggered `LINT.IfChange` / `LINT.ThenChange` block, verify every referenced file (or labeled region) was also modified. If `[FILES]...` are provided, also run a **structural validity pass** on each listed file: confirm that every `ThenChange` target path and label name exists on disk, regardless of whether it was part of the diff. If the diff **deletes** (or renames) any file, also run a **reverse-lookup pass**: walk surviving repo files to find any `ThenChange` directives that still reference the deleted path (files already covered by the structural validity pass are skipped to avoid duplicate findings).
 3. **Report** — emit findings in `pretty`, `plain`, or `json` format.
 
 ## License

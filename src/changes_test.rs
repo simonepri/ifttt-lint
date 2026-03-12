@@ -51,7 +51,7 @@ fn write_files(dir: &Path, files: &[(&str, &str)]) {
         -fn old() {
         -    // gone
         -}
-    ", 0 },
+    ", 1 },
     rename = { "
         --- a/src/old.rs
         +++ b/src/new.rs
@@ -62,12 +62,12 @@ fn write_files(dir: &Path, files: &[(&str, &str)]) {
          }
     ", 2 },
 )]
-fn from_diff_file_count(diff: &str, expected: usize) {
+fn from_diff_file_count(diff: &str, expected_file_count: usize) {
     let diff = unindent(diff);
     let map = from_diff(&mut Cursor::new(diff)).unwrap();
     assert_eq!(
         map.len(),
-        expected,
+        expected_file_count,
         "files: {:?}",
         map.keys().collect::<Vec<_>>()
     );
@@ -120,13 +120,13 @@ fn from_diff_lines(diff: &str, file: &str, expected_added: &[usize], expected_re
     two_files = { files!{ "a.rs" => "l1\n", "b.rs" => "l1\nl2\n" }, 2 },
     empty_file = { files!{ "a.rs" => "" }, 0 },
 )]
-fn from_directory_file_count(files: &[(&str, &str)], expected: usize) {
+fn from_directory_file_count(files: &[(&str, &str)], expected_file_count: usize) {
     let dir = TempDir::new().unwrap();
     write_files(dir.path(), files);
     let (map, _) = from_directory(dir.path());
     assert_eq!(
         map.len(),
-        expected,
+        expected_file_count,
         "files: {:?}",
         map.keys().collect::<Vec<_>>()
     );
