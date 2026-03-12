@@ -3,6 +3,5 @@
   description: Enforce atomic cross-file changes via LINT.IfChange/ThenChange directives
   entry: ifttt-lint
   language: rust
-  pass_filenames: false
-  always_run: true
+  pass_filenames: true
   stages: [pre-commit]

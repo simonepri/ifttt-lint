@@ -13,9 +13,10 @@ mod git;
     about = "Enforces atomic changes via LINT.IfChange/ThenChange directives"
 )]
 struct Cli {
-    /// Git ref range (e.g. main...HEAD), diff file path, or - for stdin.
-    /// With no argument: auto-detects git upstream and diffs against it.
-    input: Option<String>,
+    /// Diff source: git ref range (e.g. main...HEAD), path to a patch file, or - for stdin.
+    /// Default: auto-detect git upstream (TTY) or read stdin (piped).
+    #[arg(short, long)]
+    diff: Option<String>,
 
     /// Project root for // paths. Defaults to git repo root or cwd.
     #[arg(long)]
@@ -29,9 +30,10 @@ struct Cli {
     #[arg(short, long)]
     ignore: Vec<String>,
 
-    /// Scan mode: validate directive syntax in a directory.
-    #[arg(short, long)]
-    scan: Option<PathBuf>,
+    /// Files to validate structurally: checks that every ThenChange target and
+    /// label exists on disk, regardless of whether the file was modified.
+    /// Intended for use with pre-commit's `pass_filenames: true`.
+    files: Vec<PathBuf>,
 
     /// Output format.
     #[arg(short, long, default_value = "pretty")]
@@ -52,39 +54,80 @@ fn main() {
     }
 
     // Determine project root
-    let mut root = cli.root.clone().unwrap_or_else(git::resolve_root);
+    let root = cli.root.clone().unwrap_or_else(git::resolve_root);
 
-    // Stage 1: Parse input
-    // In scan mode, override root to the scan directory so file paths resolve correctly.
-    let (changes, content_hint) = if let Some(scan_dir) = &cli.scan {
-        root = scan_dir.clone();
-        // from_directory reads each file once and returns the content alongside the
-        // ChangeMap. Passing it to check() avoids reading every file a second time
-        // during directive parsing.
-        let (chgs, content) = changes::from_directory(scan_dir);
-        (chgs, Some(content))
+    // Stage 1: Parse diff input.
+    // When FILES are given without --diff, skip the diff pass: the caller only
+    // wants structural validation and we avoid unnecessary git upstream detection.
+    let skip_diff = cli.diff.is_none() && !cli.files.is_empty();
+    let changes = if skip_diff {
+        changes::ChangeMap::new()
     } else {
-        let diff_input = match git::resolve_input(&cli.input) {
+        let diff_input = match git::resolve_input(&cli.diff) {
             Ok(i) => i,
             Err(e) => {
                 eprintln!("error: {e}");
                 process::exit(2);
             }
         };
-
         let mut cursor = std::io::Cursor::new(diff_input.diff);
-        let changes = match changes::from_diff(&mut cursor) {
+        match changes::from_diff(&mut cursor) {
             Ok(c) => c,
             Err(e) => {
                 eprintln!("error: {e}");
                 process::exit(2);
             }
-        };
-
-        (changes, None)
+        }
     };
 
-    if changes.is_empty() || std::env::var("NO_IFTTT").is_ok() {
+    // Build file_list from positional args (root-relative paths).
+    let file_list: Vec<String> = cli
+        .files
+        .iter()
+        .filter_map(|p| {
+            // Try to make path root-relative; fall back to the path as-is if it
+            // is already relative (e.g. passed by pre-commit without an absolute prefix).
+            // On Windows, strip_prefix may fail if separator styles differ between `p`
+            // and `root`; the is_relative fallback handles that case and
+            // normalize_path_str normalizes to forward slashes for cache key matching.
+            if let Ok(rel) = p.strip_prefix(&root) {
+                Some(ifttt_lint::check::normalize_path_str(
+                    &rel.to_string_lossy(),
+                ))
+            } else if p.is_relative() {
+                Some(ifttt_lint::check::normalize_path_str(&p.to_string_lossy()))
+            } else {
+                eprintln!(
+                    "warning: '{}' is outside the project root and will be skipped",
+                    p.display()
+                );
+                None
+            }
+        })
+        .collect();
+
+    // NO_IFTTT suppresses diff-based validation (added/removed line data) but
+    // preserves deleted-file markers so the reverse-lookup pass still detects
+    // surviving files that reference a deleted target.  The structural validity
+    // pass (file_list) is also unaffected.
+    let changes = if std::env::var("NO_IFTTT").is_ok() {
+        changes
+            .into_iter()
+            .filter_map(
+                |(path, fc)| {
+                    if fc.deleted {
+                        Some((path, fc))
+                    } else {
+                        None
+                    }
+                },
+            )
+            .collect()
+    } else {
+        changes
+    };
+
+    if changes.is_empty() && file_list.is_empty() {
         process::exit(0);
     }
 
@@ -102,7 +145,7 @@ fn main() {
         .collect();
 
     // Stage 2: Check
-    let result = check::check(&changes, &root, &ignore_patterns, content_hint.as_ref());
+    let result = check::check(&changes, &root, &ignore_patterns, &file_list);
 
     // Stage 3: Format
     let output = reports::format(

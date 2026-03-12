@@ -123,7 +123,7 @@ fn bench_cpu_bound(c: &mut Criterion) {
             &n_blocks,
             |b, _| {
                 b.iter(|| {
-                    check::check(&changes, dir.path(), &[], None);
+                    check::check(&changes, dir.path(), &[], &[]);
                 });
             },
         );
@@ -151,7 +151,7 @@ fn bench_io_bound(c: &mut Criterion) {
             &n_files,
             |b, _| {
                 b.iter(|| {
-                    check::check(&changes, dir.path(), &[], None);
+                    check::check(&changes, dir.path(), &[], &[]);
                 });
             },
         );
@@ -179,7 +179,7 @@ fn bench_label_resolution(c: &mut Criterion) {
             &n_files,
             |b, _| {
                 b.iter(|| {
-                    check::check(&changes, dir.path(), &[], None);
+                    check::check(&changes, dir.path(), &[], &[]);
                 });
             },
         );
@@ -230,7 +230,67 @@ fn bench_scaling(c: &mut Criterion) {
 
         group.bench_with_input(BenchmarkId::new("files_x_blocks", label), &label, |b, _| {
             b.iter(|| {
-                check::check(&changes, dir.path(), &[], None);
+                check::check(&changes, dir.path(), &[], &[]);
+            });
+        });
+    }
+
+    group.finish();
+}
+
+/// Benchmark the reverse lookup triggered by a file deletion.
+///
+/// Models a realistic repo: `n_plain` files have no LINT directives (skipped
+/// by the LINT. filter), `n_lint` files have LINT directives that do NOT
+/// reference the deleted file (skipped by the content filter), and one file
+/// references the deleted target and receives a finding.
+fn bench_deleted_target_reverse_lookup(c: &mut Criterion) {
+    let mut group = c.benchmark_group("deleted_target_reverse_lookup");
+    group.warm_up_time(Duration::from_secs(1));
+    group.measurement_time(Duration::from_secs(3));
+    group.sample_size(10);
+
+    for (n_plain, n_lint) in [(100, 10), (1_000, 100), (10_000, 1_000)] {
+        let label = format!("{n_plain}_plain_{n_lint}_lint");
+
+        let dir = TempDir::new().unwrap();
+
+        // Plain files: no LINT directives, skipped by the first content filter.
+        for i in 0..n_plain {
+            let content = format!("fn plain_{i}() {{}}\n");
+            fs::write(dir.path().join(format!("plain_{i}.rs")), content).unwrap();
+        }
+
+        // LINT files: have directives but don't reference the deleted file.
+        for i in 0..n_lint {
+            let next = (i + 1) % n_lint;
+            let content = unindent(&format!(
+                "
+                // LINT.IfChange
+                fn lint_{i}() {{}}
+                // LINT.ThenChange('//lint_{next}.rs')
+            "
+            ));
+            fs::write(dir.path().join(format!("lint_{i}.rs")), content).unwrap();
+        }
+
+        // One file that references the deleted target.
+        let referencing = unindent(
+            "
+            // LINT.IfChange
+            fn referencing() {}
+            // LINT.ThenChange('//deleted.rs')
+        ",
+        );
+        fs::write(dir.path().join("referencing.rs"), referencing).unwrap();
+
+        // Build a diff that deletes 'deleted.rs' (file was never on disk).
+        let diff = "--- a/deleted.rs\n+++ /dev/null\n@@ -1 +0,0 @@\n-fn deleted() {}\n";
+        let changes = ifttt_lint::changes::from_diff(&mut std::io::Cursor::new(diff)).unwrap();
+
+        group.bench_with_input(BenchmarkId::new("repo_size", &label), &label, |b, _| {
+            b.iter(|| {
+                check::check(&changes, dir.path(), &[], &[]);
             });
         });
     }
@@ -244,5 +304,6 @@ criterion_group!(
     bench_io_bound,
     bench_label_resolution,
     bench_scaling,
+    bench_deleted_target_reverse_lookup,
 );
 criterion_main!(benches);

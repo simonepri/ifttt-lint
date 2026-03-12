@@ -22,17 +22,23 @@ macro_rules! files {
 struct CheckCase {
     files: &'static [(&'static str, &'static str)],
     diff: Option<&'static str>,
+    /// Root-relative file paths to validate structurally (structural validity pass).
+    file_list: &'static [&'static str],
     ignore_patterns: &'static [&'static str],
     expected_errors: Option<&'static [&'static str]>,
     expected_findings: Option<&'static [&'static str]>,
+    /// Exact number of findings expected. `None` skips the count check.
+    expected_finding_count: Option<usize>,
 }
 
 const DEFAULTS: CheckCase = CheckCase {
     files: &[],
     diff: None,
+    file_list: &[],
     ignore_patterns: &[],
     expected_errors: None,
     expected_findings: None,
+    expected_finding_count: None,
 };
 
 fn run_case(case: &CheckCase) {
@@ -58,12 +64,12 @@ fn run_case(case: &CheckCase) {
     }
 
     // Parse input
-    let diff = case.diff.map(|d| unindent(d));
-    let (change_map, content_hint) = match diff.as_deref() {
-        Some(d) => (changes::from_diff(&mut Cursor::new(d)).unwrap(), None),
+    let diff = case.diff.map(unindent);
+    let change_map = match diff.as_deref() {
+        Some(d) => changes::from_diff(&mut Cursor::new(d)).unwrap(),
         None => {
-            let (chgs, content) = changes::from_directory(dir.path());
-            (chgs, Some(content))
+            let (chgs, _) = changes::from_directory(dir.path());
+            chgs
         }
     };
 
@@ -74,7 +80,9 @@ fn run_case(case: &CheckCase) {
         .filter_map(|p| globset::Glob::new(p).ok().map(|g| g.compile_matcher()))
         .collect();
 
-    let result = check(&change_map, dir.path(), &matchers, content_hint.as_ref());
+    let file_list: Vec<String> = case.file_list.iter().map(|s| s.to_string()).collect();
+
+    let result = check(&change_map, dir.path(), &matchers, &file_list);
 
     // Assert parse errors
     if let Some(expected) = case.expected_errors {
@@ -106,14 +114,34 @@ fn run_case(case: &CheckCase) {
             );
         } else {
             for msg in expected {
+                // "source:<pattern>" matches source_file; everything else matches message.
+                let (field, pattern) = msg
+                    .strip_prefix("source:")
+                    .map(|p| ("source_file", p))
+                    .unwrap_or(("message", *msg));
                 assert!(
-                    result.findings.iter().any(|f| f.message.contains(msg)),
-                    "expected finding containing '{}', got: {:?}",
-                    msg,
+                    result.findings.iter().any(|f| {
+                        if field == "source_file" {
+                            f.source_file.contains(pattern)
+                        } else {
+                            f.message.contains(pattern)
+                        }
+                    }),
+                    "expected finding with {field} containing '{pattern}', got: {:?}",
                     result.findings
                 );
             }
         }
+    }
+
+    // Assert exact finding count (when specified)
+    if let Some(count) = case.expected_finding_count {
+        assert_eq!(
+            result.findings.len(),
+            count,
+            "expected exactly {count} finding(s), got: {:?}",
+            result.findings
+        );
     }
 }
 
@@ -687,7 +715,7 @@ fn binary_file_skipped() {
     fs::write(&file, content).unwrap();
 
     let (changes, _) = changes::from_directory(dir.path());
-    let result = check(&changes, dir.path(), &[], None);
+    let result = check(&changes, dir.path(), &[], &[]);
     assert!(result.parse_errors.is_empty());
     assert!(result.findings.is_empty());
 }
@@ -760,7 +788,7 @@ fn binary_file_skipped() {
             +fn api() { v2 }
              // LINT.ThenChange('//src/missing.rs')
         "),
-        expected_findings: Some(&["not modified"]),
+        expected_findings: Some(&["target file not found"]),
         ..DEFAULTS
     } },
     changes_outside_if_range_ignored = { CheckCase {
@@ -927,6 +955,145 @@ fn binary_file_skipped() {
     } },
 )]
 fn cross_file_validation(case: CheckCase) {
+    run_case(&case);
+}
+
+// ─── Reverse lookup: deleted target referenced by unchanged file ───
+
+#[parameterized(
+    // A points to B via ThenChange; B is deleted; A is unchanged.
+    // The reverse lookup should find A and emit a finding.
+    target_deleted_referenced_by_unchanged_file = { CheckCase {
+        files: files!{
+            "src/a.rs" => "
+                // LINT.IfChange
+                fn a() {}
+                // LINT.ThenChange('//src/b.rs')
+            ",
+            // src/b.rs is absent — it was deleted
+        },
+        diff: Some("
+            --- a/src/b.rs
+            +++ /dev/null
+            @@ -1,3 +0,0 @@
+            -// LINT.IfChange
+            -fn b() {}
+            -// LINT.ThenChange('//src/a.rs')
+        "),
+        expected_findings: Some(&["target file not found: src/b.rs"]),
+        ..DEFAULTS
+    } },
+    // A and B reference each other; A is deleted; B is unchanged.
+    // The reverse lookup should find B's dangling reference to A.
+    circular_reference_deleted_side = { CheckCase {
+        files: files!{
+            "src/b.rs" => "
+                // LINT.IfChange
+                fn b() {}
+                // LINT.ThenChange('//src/a.rs')
+            ",
+            // src/a.rs is absent — it was deleted
+        },
+        diff: Some("
+            --- a/src/a.rs
+            +++ /dev/null
+            @@ -1,3 +0,0 @@
+            -// LINT.IfChange
+            -fn a() {}
+            -// LINT.ThenChange('//src/b.rs')
+        "),
+        expected_findings: Some(&["target file not found: src/a.rs"]),
+        ..DEFAULTS
+    } },
+    // A points to B:section via ThenChange; B is deleted; A is unchanged.
+    // The finding should include the label name.
+    deleted_target_with_label = { CheckCase {
+        files: files!{
+            "src/a.rs" => "
+                // LINT.IfChange
+                fn a() {}
+                // LINT.ThenChange('//src/b.rs:section')
+            ",
+            // src/b.rs is absent — it was deleted
+        },
+        diff: Some("
+            --- a/src/b.rs
+            +++ /dev/null
+            @@ -1,3 +0,0 @@
+            -// LINT.IfChange
+            -fn b() {}
+            -// LINT.ThenChange('//src/a.rs')
+        "),
+        expected_findings: Some(&["target file not found: src/b.rs (label 'section')"]),
+        ..DEFAULTS
+    } },
+    // No deletion in the diff — reverse lookup must not run / produce findings.
+    no_deletion_no_reverse_lookup = { CheckCase {
+        files: files!{
+            "src/a.rs" => "
+                // LINT.IfChange
+                fn a() {}
+                // LINT.ThenChange('//src/b.rs')
+            ",
+            "src/b.rs" => "fn b() {}\n",
+        },
+        diff: Some("
+            --- a/src/b.rs
+            +++ b/src/b.rs
+            @@ -1 +1 @@
+            -fn b() {}
+            +fn b() { v2 }
+        "),
+        expected_findings: Some(&[]),
+        ..DEFAULTS
+    } },
+    // src/a.rs is in file_list and points to src/b.rs which was deleted.
+    // The structural pass catches it; the reverse-lookup skips file_list files.
+    // Exactly one finding expected (no duplicate).
+    file_list_catches_deleted_target_structurally = { CheckCase {
+        files: files!{
+            "src/a.rs" => "
+                // LINT.IfChange
+                fn a() {}
+                // LINT.ThenChange('//src/b.rs')
+            ",
+            // src/b.rs is absent — it was deleted
+        },
+        diff: Some("
+            --- a/src/b.rs
+            +++ /dev/null
+            @@ -1 +0,0 @@
+            -fn b() {}
+        "),
+        file_list: &["src/a.rs"],
+        expected_findings: Some(&["target file not found: src/b.rs"]),
+        expected_finding_count: Some(1),
+        ..DEFAULTS
+    } },
+    // Same as above but the ThenChange includes a label. Both the finding message
+    // and the exact count are checked.
+    file_list_catches_deleted_target_with_label = { CheckCase {
+        files: files!{
+            "src/a.rs" => "
+                // LINT.IfChange
+                fn a() {}
+                // LINT.ThenChange('//src/b.rs:api')
+            ",
+            // src/b.rs is absent — it was deleted
+        },
+        diff: Some("
+            --- a/src/b.rs
+            +++ /dev/null
+            @@ -1 +0,0 @@
+            -fn b() {}
+        "),
+        file_list: &["src/a.rs"],
+        expected_findings: Some(&["target file not found: src/b.rs (label 'api')"]),
+        expected_finding_count: Some(1),
+        ..DEFAULTS
+    } },
+)]
+fn deleted_target_reverse_lookup(case: CheckCase) {
     run_case(&case);
 }
 
@@ -1253,7 +1420,7 @@ fn consecutive_if_change_error_on_first_line() {
     fs::write(dir.path().join("b.rs"), "x\n").unwrap();
 
     let (changes, _) = changes::from_directory(dir.path());
-    let result = check(&changes, dir.path(), &[], None);
+    let result = check(&changes, dir.path(), &[], &[]);
 
     let err = result
         .parse_errors
@@ -1387,10 +1554,15 @@ fn multiline_html_comment_then_change() {
     });
 }
 
-// ─── Issue 6: parse error for missing file uses line 0 ───
+// ─── Issue 6: modified-but-missing file produces a parse error ───
+//
+// A file that appears as modified (not deleted) in the diff but does not
+// exist on disk indicates a stale patch or race condition.  This is reported
+// as a parse error.  Deleted files (new path = /dev/null) are expected to be
+// absent and are silently skipped.
 
 #[test]
-fn parse_error_for_missing_file_uses_line_1_not_0() {
+fn modified_but_missing_file_produces_parse_error() {
     let dir = TempDir::new().unwrap();
     // Don't create "missing.rs" on disk but reference it in the diff
     let diff = unindent(
@@ -1403,17 +1575,37 @@ fn parse_error_for_missing_file_uses_line_1_not_0() {
     ",
     );
     let changes = changes::from_diff(&mut Cursor::new(diff)).unwrap();
-    let result = check(&changes, dir.path(), &[], None);
+    let result = check(&changes, dir.path(), &[], &[]);
     let err = result
         .parse_errors
         .iter()
-        .find(|e| e.message.contains("failed to read"))
-        .expect("should have read error for missing file");
+        .find(|e| e.message.contains("not found on disk"))
+        .expect("should have error for modified-but-missing file");
     assert_eq!(
         err.line.get(),
         1,
-        "file read error should use line 1, got {}",
+        "missing-file error should use line 1, got {}",
         err.line,
+    );
+}
+
+#[test]
+fn deleted_file_missing_from_disk_produces_no_error() {
+    let dir = TempDir::new().unwrap();
+    let diff = unindent(
+        "
+        --- a/deleted.rs
+        +++ /dev/null
+        @@ -1 +0,0 @@
+        -old
+    ",
+    );
+    let changes = changes::from_diff(&mut Cursor::new(diff)).unwrap();
+    let result = check(&changes, dir.path(), &[], &[]);
+    assert!(
+        result.parse_errors.is_empty(),
+        "expected no parse errors for a deleted file, got: {:?}",
+        result.parse_errors,
     );
 }
 
@@ -1498,6 +1690,229 @@ fn prose_comment_mentioning_then_change_does_not_trigger_multiline() {
     });
 }
 
+// ─── Structural validity pass (file_list) ───
+
+#[parameterized(
+    // File in list with ThenChange → missing target file → finding "target file not found".
+    // Uses an empty diff so a.rs is NOT in the change map; only the structural pass fires.
+    missing_target_file = { CheckCase {
+        files: files!{
+            "a.rs" => "
+                // LINT.IfChange
+                fn a() {}
+                // LINT.ThenChange('//missing.rs')
+            ",
+        },
+        diff: Some(""),
+        file_list: &["a.rs"],
+        expected_findings: Some(&["target file not found: missing.rs"]),
+        ..DEFAULTS
+    } },
+    // File in list with ThenChange → missing label in existing target → finding "label not found".
+    // Uses an empty diff so a.rs is NOT in the change map; only the structural pass fires.
+    missing_label = { CheckCase {
+        files: files!{
+            "a.rs" => "
+                // LINT.IfChange
+                fn a() {}
+                // LINT.ThenChange('//b.rs:nonexistent')
+            ",
+            "b.rs" => "fn b() {}\n",
+        },
+        diff: Some(""),
+        file_list: &["a.rs"],
+        expected_findings: Some(&["label 'nonexistent' not found in b.rs"]),
+        ..DEFAULTS
+    } },
+    // File in list with ThenChange → valid target file and label → no finding.
+    // Uses an empty diff so a.rs is NOT in the change map; only the structural pass fires.
+    valid_target = { CheckCase {
+        files: files!{
+            "a.rs" => "
+                // LINT.IfChange
+                fn a() {}
+                // LINT.ThenChange('//b.rs:section')
+            ",
+            "b.rs" => "
+                // LINT.Label('section')
+                fn b() {}
+                // LINT.EndLabel
+            ",
+        },
+        diff: Some(""),
+        file_list: &["a.rs"],
+        expected_findings: Some(&[]),
+        ..DEFAULTS
+    } },
+    // File in list but itself missing on disk → parse error reported.
+    file_itself_missing = { CheckCase {
+        files: files!{},
+        diff: Some(""),
+        file_list: &["nonexistent.rs"],
+        expected_errors: Some(&["file not found on disk"]),
+        expected_findings: Some(&[]),
+        ..DEFAULTS
+    } },
+    // File in file_list AND triggered by diff → exactly one finding (no duplicate).
+    // The structural pass skips triggered pairs, so the diff pass is the sole source.
+    no_duplicate_when_in_diff_and_file_list = { CheckCase {
+        files: files!{
+            "a.rs" => "
+                // LINT.IfChange
+                fn a() {}
+                // LINT.ThenChange('//b.rs')
+            ",
+            "b.rs" => "fn b() {}\n",
+        },
+        diff: Some("
+            --- a/a.rs
+            +++ b/a.rs
+            @@ -1,3 +1,3 @@
+             // LINT.IfChange
+            -fn a() {}
+            +fn a() { v2 }
+             // LINT.ThenChange('//b.rs')
+        "),
+        file_list: &["a.rs"],
+        expected_findings: Some(&["not modified"]),
+        expected_finding_count: Some(1),
+        ..DEFAULTS
+    } },
+    // Same-file :label reference where label exists → no finding.
+    same_file_label_exists = { CheckCase {
+        files: files!{
+            "a.rs" => "
+                // LINT.IfChange
+                fn a() {}
+                // LINT.ThenChange(':section')
+                // LINT.Label('section')
+                fn b() {}
+                // LINT.EndLabel
+            ",
+        },
+        diff: Some(""),
+        file_list: &["a.rs"],
+        expected_findings: Some(&[]),
+        ..DEFAULTS
+    } },
+    // Same-file :label reference where label does NOT exist → finding.
+    same_file_label_missing = { CheckCase {
+        files: files!{
+            "a.rs" => "
+                // LINT.IfChange
+                fn a() {}
+                // LINT.ThenChange(':nonexistent')
+            ",
+        },
+        diff: Some(""),
+        file_list: &["a.rs"],
+        expected_findings: Some(&["label 'nonexistent' not found in a.rs"]),
+        ..DEFAULTS
+    } },
+    // Reverse lookup scoped to non-file_list files.
+    // B is deleted; A (in file_list) gets a finding from the structural pass,
+    // C (not in file_list) gets a finding from the reverse lookup — total = 2.
+    reverse_lookup_scoped_to_non_file_list = { CheckCase {
+        files: files!{
+            "a.rs" => "
+                // LINT.IfChange
+                fn a() {}
+                // LINT.ThenChange('//b.rs')
+            ",
+            "c.rs" => "
+                // LINT.IfChange
+                fn c() {}
+                // LINT.ThenChange('//b.rs')
+            ",
+            // b.rs is absent — it was deleted
+        },
+        diff: Some("
+            --- a/b.rs
+            +++ /dev/null
+            @@ -1,3 +0,0 @@
+            -// LINT.IfChange
+            -fn b() {}
+            -// LINT.ThenChange('//a.rs')
+        "),
+        file_list: &["a.rs"],
+        // Both a.rs (structural pass) and c.rs (reverse lookup) should report a
+        // dangling reference to b.rs.  Match source_file to verify both emitters.
+        expected_findings: Some(&["source:a.rs", "source:c.rs"]),
+        expected_finding_count: Some(2),
+        ..DEFAULTS
+    } },
+)]
+fn structural_validity_pass(case: CheckCase) {
+    run_case(&case);
+}
+
+// ─── Combined --diff + [FILES]... mode ───
+
+#[parameterized(
+    // Diff pass and structural pass each emit one finding on different files;
+    // total must be exactly 2 with no cross-contamination.
+    diff_and_structural_distinct_findings = { CheckCase {
+        files: files!{
+            // a.rs: in file_list only, points at a file that doesn't exist.
+            // Structural pass should emit one finding.
+            "a.rs" => "
+                // LINT.IfChange
+                fn a() {}
+                // LINT.ThenChange('//missing_structural.rs')
+            ",
+            // b.rs: modified in diff, points at c.rs which exists but is not modified.
+            // Diff pass should emit one finding.
+            "b.rs" => "
+                // LINT.IfChange
+                fn b() {}
+                // LINT.ThenChange('//c.rs')
+            ",
+            "c.rs" => "fn c() {}\n",
+        },
+        diff: Some("
+            --- a/b.rs
+            +++ b/b.rs
+            @@ -1,3 +1,3 @@
+             // LINT.IfChange
+            -fn b() {}
+            +fn b() { v2 }
+             // LINT.ThenChange('//c.rs')
+        "),
+        file_list: &["a.rs"],
+        expected_findings: Some(&["source:a.rs", "source:b.rs"]),
+        expected_finding_count: Some(2),
+        ..DEFAULTS
+    } },
+    // Both passes fire on the same file; finding must appear exactly once.
+    diff_and_structural_same_file_no_duplicate = { CheckCase {
+        files: files!{
+            // a.rs: in file_list AND modified in diff; b.rs doesn't exist.
+            // Only one finding expected regardless of how many passes touch a.rs.
+            "a.rs" => "
+                // LINT.IfChange
+                fn a() {}
+                // LINT.ThenChange('//missing.rs')
+            ",
+        },
+        diff: Some("
+            --- a/a.rs
+            +++ b/a.rs
+            @@ -1,3 +1,3 @@
+             // LINT.IfChange
+            -fn a() {}
+            +fn a() { v2 }
+             // LINT.ThenChange('//missing.rs')
+        "),
+        file_list: &["a.rs"],
+        expected_findings: Some(&["missing.rs"]),
+        expected_finding_count: Some(1),
+        ..DEFAULTS
+    } },
+)]
+fn combined_diff_and_file_list(case: CheckCase) {
+    run_case(&case);
+}
+
 // ─── Finding context ───
 
 #[test]
@@ -1527,7 +1942,7 @@ fn finding_includes_if_change_label() {
     fs::write(dir.path().join("src/b.rs"), "fn b() {}\n").unwrap();
 
     let changes = changes::from_diff(&mut Cursor::new(&diff)).unwrap();
-    let result = check(&changes, dir.path(), &[], None);
+    let result = check(&changes, dir.path(), &[], &[]);
     assert_eq!(result.findings.len(), 1);
     // Assert the label is surfaced in the formatted location shown to users,
     // not just stored in an internal field.
