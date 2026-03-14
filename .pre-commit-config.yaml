@@ -1,0 +1,62 @@
+repos:
+  - repo: local
+    hooks:
+      - id: oxfmt
+        alias: check-oxfmt
+        name: check-oxfmt
+        entry: oxfmt
+        args: ["--write", "--no-error-on-unmatched-pattern"]
+        language: node
+        additional_dependencies: ["oxfmt@0.40.0"]
+        types_or: [markdown, json, yaml]
+  - repo: https://github.com/ComPWA/mirrors-taplo
+    rev: v0.9.3
+    hooks:
+      - id: taplo-format
+        alias: check-taplo
+        name: check-taplo
+  - repo: local
+    hooks:
+      - id: cargo-fmt
+        alias: check-cargo-fmt
+        name: check-cargo-fmt
+        entry: cargo fmt
+        args: ["--all"]
+        language: rust
+        types: [rust]
+        pass_filenames: false
+  - repo: local
+    hooks:
+      - id: cargo-clippy
+        alias: check-cargo-clippy
+        name: check-cargo-clippy
+        entry: cargo clippy
+        args: ["--", "-D", "warnings"]
+        language: rust
+        types: [rust]
+        pass_filenames: false
+  - repo: local
+    hooks:
+      - id: cargo-deny
+        alias: check-cargo-deny
+        name: check-cargo-deny
+        entry: cargo-deny
+        args: ["check"]
+        language: rust
+        additional_dependencies: ["cli:cargo-deny:0.19.0"]
+        pass_filenames: false
+        files: (Cargo\.(toml|lock)|deny\.toml)
+  - repo: local
+    hooks:
+      - id: ifttt-lint
+        alias: check-ifttt-lint
+        name: check-ifttt-lint
+        entry: cargo run --
+        language: rust
+        pass_filenames: true
+  - repo: https://github.com/rhysd/actionlint
+    rev: v1.7.11
+    hooks:
+      - id: actionlint
+        alias: check-actionlint
+        name: check-actionlint
