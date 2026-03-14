@@ -1,0 +1,16 @@
+- id: ifttt-lint
+  name: ifttt-lint
+  description: Enforce atomic cross-file changes via LINT.IfChange/ThenChange directives
+  entry: ifttt-lint
+  language: rust
+  pass_filenames: true
+  stages: [pre-commit]
+
+- id: ifttt-lint-diff
+  name: ifttt-lint (diff)
+  description: Validate co-changes via LINT.IfChange/ThenChange on push (diff mode, supports NO_IFTTT suppression)
+  entry: ifttt-lint --diff ${PRE_COMMIT_FROM_REF}..${PRE_COMMIT_TO_REF}
+  language: rust
+  pass_filenames: false
+  always_run: true
+  stages: [pre-push]
