@@ -1,0 +1,45 @@
+[package]
+name = "ifttt-lint"
+# LINT.IfChange(version)
+version = "0.8.0"
+# LINT.ThenChange(
+#     //readme.md:version-pre-commit,
+#     //readme.md:version-github-action,
+#     //.github/workflows/ci-cd.yml:version,
+# )
+edition = "2021"
+# read_file handles ErrorKind::IsADirectory (stabilised in 1.83).
+rust-version = "1.83"
+description = "🔗 IfThisThenThat linter — enforce atomic cross-file changes via LINT.IfChange / LINT.ThenChange directives (IfChangeThenChange / IFTTT)."
+keywords = ["lint", "ifttt", "ifchange", "thenchange", "monorepo"]
+categories = ["development-tools", "command-line-utilities"]
+license = "MIT"
+readme = "readme.md"
+repository = "https://github.com/simonepri/ifttt-lint"
+
+[features]
+test-util = []
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+globset = "0.4"
+patch = "0.7"
+rayon = "1"
+regex = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+assert_cmd = "2"
+divan = { version = "4.4.1", package = "codspeed-divan-compat" }
+insta = { version = "1", features = ["yaml"] }
+tempfile = "3"
+unindent = "0.2"
+yare = "3"
+
+[[bench]]
+name = "check_bench"
+path = "src/check_bench.rs"
+harness = false
+required-features = ["test-util"]

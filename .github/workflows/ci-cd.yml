@@ -1,0 +1,124 @@
+# CI/CD Pipeline
+#
+# On every push to main and on PRs: runs lint, test, and bench in parallel.
+#
+# On push to main only (after all CI jobs pass): the release job runs release-plz, which:
+#   1. Reads conventional commit messages since the last release (feat: → minor, fix: → patch, feat!: → major).
+#   2. Creates or updates a release PR that bumps the version in Cargo.toml and updates the changelog.
+#   3. If a version is already tagged and ready (from a previously merged release PR), publishes to
+#      crates.io and creates a GitHub Release.
+#
+# The only manual step is merging the release PR — everything else is automatic.
+#
+# Required secrets: CARGO_REGISTRY_TOKEN (for crates.io). GITHUB_TOKEN is provided by GitHub Actions.
+
+name: CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v2
+      - uses: Swatinem/rust-cache@v2
+      - run: pre-commit run --all-files
+
+  action:
+    name: IfThisThenThat
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v2
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test
+
+  bench:
+    name: Bench
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v2
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-targets: release
+      - name: Install cargo-codspeed
+        run: cargo install cargo-codspeed
+      - name: Build benchmarks
+        run: cargo codspeed build -m walltime --features test-util --bench check_bench
+      - name: Run benchmarks
+        uses: CodSpeedHQ/action@v4
+        with:
+          mode: walltime
+          run: cargo codspeed run --features test-util --bench check_bench
+
+  release:
+    name: Release
+    runs-on: ubuntu-latest
+    needs: [lint, test]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: release-plz/action@v0.5
+        id: release-pr
+        with:
+          command: release-pr
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+      - name: Update pre-commit hook version in readme
+        env:
+          PRS: ${{ steps.release-pr.outputs.prs }}
+        run: |
+          BRANCH=$(echo "$PRS" | jq -r '.[0].head_branch // empty')
+          [ -z "$BRANCH" ] && exit 0
+
+          git fetch origin "$BRANCH"
+          git checkout "$BRANCH"
+
+          # LINT.IfChange(version)
+          VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          # LINT.ThenChange(//Cargo.toml:version, //readme.md:version-pre-commit, //readme.md:version-github-action)
+          sed -i "s|rev: v[0-9][0-9.]*|rev: v${VERSION}|" readme.md
+          sed -i "s|ifttt-lint@v[0-9][0-9.]*|ifttt-lint@v${VERSION}|g" readme.md
+
+          if ! git diff --quiet readme.md; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add readme.md
+            git commit --amend --no-edit
+            git push --force-with-lease origin "$BRANCH"
+          fi
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: release-plz/action@v0.5
+        with:
+          command: release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}

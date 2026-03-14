@@ -1,0 +1,47 @@
+name: "ifttt-lint"
+description: "Enforce atomic cross-file changes via LINT.IfChange/ThenChange directives"
+author: "simonepri"
+branding:
+  icon: link
+  color: orange
+
+inputs:
+  args:
+    description: "Extra arguments to pass to ifttt-lint (e.g. '--format json --strict=false')."
+    required: false
+    default: ""
+
+runs:
+  using: "composite"
+  steps:
+    - uses: dtolnay/rust-toolchain@stable
+
+    - name: Install ifttt-lint
+      shell: bash
+      run: cargo install --path "$GITHUB_ACTION_PATH"
+
+    - name: Run ifttt-lint
+      shell: bash
+      env:
+        EVENT: ${{ github.event_name }}
+        BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        EXTRA_ARGS: ${{ inputs.args }}
+      run: |
+        set -f  # Disable shell globbing — let ifttt-lint resolve globs internally.
+        if [ "$EVENT" = "pull_request" ] && [ -n "$BASE_SHA" ]; then
+          # PR: diff check — validates co-changes across all commits in the PR.
+          # Mirrors the ifttt-lint-diff hook. Supports NO_IFTTT suppression.
+          # Use the PR branch HEAD (not github.sha which is the merge commit) so
+          # git log can scan commit messages for NO_IFTTT suppression tags.
+          git fetch origin "$BASE_SHA" --depth=1 2>/dev/null || true
+          git fetch origin "$HEAD_SHA" --depth=50 2>/dev/null || true
+          git merge-base "$BASE_SHA" "$HEAD_SHA" >/dev/null 2>&1 || \
+            git fetch origin --unshallow 2>/dev/null || true
+          ifttt-lint --diff "${BASE_SHA}...${HEAD_SHA}" $EXTRA_ARGS
+        elif [ "$EVENT" = "push" ]; then
+          # Push: structural check on all tracked files — validates targets and labels.
+          # Mirrors the ifttt-lint hook. Control which branches trigger this via
+          # on.push.branches in your workflow (e.g. [main]).
+          ifttt-lint '*' $EXTRA_ARGS
+        fi
