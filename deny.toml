@@ -1,0 +1,45 @@
+# cargo deny configuration
+# https://embarkstudios.github.io/cargo-deny/
+
+[graph]
+# Only check the default feature set for the host target.
+targets = []
+
+# ─── Advisories ───────────────────────────────────────────────────────────────
+# Checks against the RustSec advisory database for known CVEs and unmaintained
+# crates. The database is fetched at check time.
+
+[advisories]
+version = 2
+
+# ─── Licenses ─────────────────────────────────────────────────────────────────
+# Ensure every dependency uses a permissive, OSI-approved license.
+
+[licenses]
+version = 2
+# Deny any crate whose license is not in this list.
+allow = ["MIT", "Apache-2.0", "Unicode-3.0", "Unlicense"]
+# Confidence threshold for license text detection (0.0–1.0).
+confidence-threshold = 0.8
+
+# ─── Bans ─────────────────────────────────────────────────────────────────────
+# Detect duplicate versions of the same crate and disallow known-bad crates.
+
+[bans]
+# Warn on multiple versions of the same crate in the dependency tree.
+multiple-versions = "allow"
+# Deny crates whose functionality is better served by a different crate.
+deny = []
+# Skip duplicate-version warnings for crates where multiple versions are
+# commonly required by the ecosystem and hard to unify.
+skip = []
+
+# ─── Sources ──────────────────────────────────────────────────────────────────
+# Only allow dependencies sourced from crates.io (no git or local path deps in
+# the published dependency tree).
+
+[sources]
+# Deny any source that is not crates.io.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
