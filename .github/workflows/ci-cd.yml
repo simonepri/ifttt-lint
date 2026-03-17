@@ -33,6 +33,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: pre-commit run --all-files
 
+  action:
+    name: Action
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./
+
   test:
     name: Test
     runs-on: ubuntu-latest
