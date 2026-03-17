@@ -112,6 +112,9 @@ jobs:
             git commit --amend --no-edit
             git push --force-with-lease origin "$BRANCH"
           fi
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: release-plz/action@v0.5
         with:
           command: release
