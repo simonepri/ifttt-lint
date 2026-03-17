@@ -1,6 +1,7 @@
 # CI/CD Pipeline
 #
-# On every push to main and on PRs: runs lint, test, and bench in parallel.
+# On every push to main, on PRs, and on workflow_dispatch: runs lint, test,
+# and bench in parallel.
 #
 # On push to main only (after all CI jobs pass): the release job runs release-plz, which:
 #   1. Reads conventional commit messages since the last release (feat: → minor, fix: → patch, feat!: → major).
@@ -19,6 +20,9 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # `workflow_dispatch` allows CodSpeed to trigger backtest
+  # performance analysis in order to generate initial data.
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always

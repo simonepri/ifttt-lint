@@ -13,6 +13,7 @@
 <p align="center">
   <a href="https://crates.io/crates/ifttt-lint"><img src="https://img.shields.io/crates/v/ifttt-lint.svg" alt="crates.io" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/github/license/simonepri/ifttt-lint.svg" alt="license" /></a>
+  <a href="https://codspeed.io/simonepri/ifttt-lint?utm_source=badge"><img src="https://img.shields.io/endpoint?url=https://codspeed.io/badge.json" alt="CodSpeed"/></a>
 </p>
 
 ## Synopsis
