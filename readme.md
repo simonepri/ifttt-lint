@@ -188,7 +188,7 @@ This repository dogfoods its own directives to keep the crate version in sync ac
 ```yaml
 # .pre-commit-config.yaml
 - repo: https://github.com/simonepri/ifttt-lint
-  rev: v0.5.1
+  rev: v0.5.2
   hooks:
     - id: ifttt-lint
 ```
