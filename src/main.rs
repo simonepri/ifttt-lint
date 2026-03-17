@@ -1,11 +1,10 @@
-use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::process;
 
 use clap::Parser;
 use ifttt_lint::vcs::VcsProvider as _;
 
-use ifttt_lint::{check, reports, vcs_git, ChangeMap};
+use ifttt_lint::{check, reports, vcs_git};
 
 #[derive(Parser)]
 #[command(
@@ -15,7 +14,7 @@ use ifttt_lint::{check, reports, vcs_git, ChangeMap};
 )]
 struct Cli {
     /// Git ref range to diff (e.g. main...HEAD).
-    /// Default: auto-detect git upstream (TTY) or staged changes (piped).
+    /// Default: staged changes (git diff --cached).
     #[arg(short, long)]
     diff: Option<String>,
 
@@ -63,35 +62,23 @@ fn main() {
         }
     };
 
-    let skip_diff = cli.diff.is_none() && !cli.files.is_empty();
-    let is_tty = std::io::stdin().is_terminal();
-    let vcs = vcs_git::GitVcsProvider::new(root, cli.diff, is_tty, cli.strict, cli.files);
+    let vcs = vcs_git::GitVcsProvider::new(root, cli.diff, cli.strict, cli.files);
 
-    // When FILES are given without --diff, skip the diff pass entirely
-    // to avoid unnecessary git upstream detection.
-    let changes = if skip_diff {
-        ChangeMap::new()
-    } else {
-        match vcs.diff() {
-            Ok(c) => c,
-            Err(e) => {
-                eprintln!("error: {e}");
-                process::exit(2);
-            }
+    let changes = match vcs.diff() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("error: {e}");
+            process::exit(2);
         }
     };
 
     // NO_IFTTT suppression preserves deleted-file markers (for reverse-lookup)
     // and the structural validity pass — only diff-based line data is suppressed.
-    let suppression = if skip_diff {
-        None
-    } else {
-        match vcs.suppressions() {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!("error: {e}");
-                process::exit(2);
-            }
+    let suppression = match vcs.suppressions() {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("error: {e}");
+            process::exit(2);
         }
     };
     let changes = if suppression.is_some() {

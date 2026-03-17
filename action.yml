@@ -40,6 +40,6 @@ runs:
         DIFF_ARGS=""
         if [ "$EVENT" = "pull_request" ] && [ -n "$BASE_SHA" ]; then
           git fetch origin "$BASE_SHA" --depth=1 2>/dev/null || true
-          DIFF_ARGS="--diff ${BASE_SHA}...${HEAD_SHA}"
+          DIFF_ARGS="--diff ${BASE_SHA}..${HEAD_SHA}"
         fi
         ifttt-lint $DIFF_ARGS ${{ inputs.args }}
