@@ -202,16 +202,16 @@ This repository dogfoods its own directives to keep the crate version in sync ac
 
 ```yaml
 - uses: actions/checkout@v4
-  with:
-    fetch-depth: 0
-- name: Lint cross-file changes
-  run: |
-    cargo install ifttt-lint
-    ifttt-lint --diff origin/${{ github.base_ref }}...HEAD
+- uses: simonepri/ifttt-lint@main
 ```
 
-> [!TIP]
-> `fetch-depth: 0` is required so git has the full history to compute the diff.
+The CLI auto-detects the git upstream diff. Pass `args` for customization:
+
+```yaml
+- uses: simonepri/ifttt-lint@main
+  with:
+    args: "--diff main...HEAD --format json --strict=false"
+```
 
 ### Manual
 

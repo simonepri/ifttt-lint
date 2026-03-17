@@ -1,0 +1,35 @@
+name: "ifttt-lint"
+description: "Enforce atomic cross-file changes via LINT.IfChange/ThenChange directives"
+author: "simonepri"
+branding:
+  icon: link
+  color: orange
+
+inputs:
+  version:
+    description: "Version of ifttt-lint to install (e.g. '0.5.0'). Default: latest."
+    required: false
+    default: ""
+  args:
+    description: "Arguments to pass to ifttt-lint (e.g. '--format json --strict=false')."
+    required: false
+    default: ""
+
+runs:
+  using: "composite"
+  steps:
+    - uses: dtolnay/rust-toolchain@stable
+
+    - name: Install ifttt-lint
+      shell: bash
+      run: |
+        VERSION="${{ inputs.version }}"
+        if [ -n "$VERSION" ]; then
+          cargo install "ifttt-lint@${VERSION}"
+        else
+          cargo install ifttt-lint
+        fi
+
+    - name: Run ifttt-lint
+      shell: bash
+      run: ifttt-lint ${{ inputs.args }}
