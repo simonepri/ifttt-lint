@@ -9,13 +9,8 @@ mod udiff;
 
 pub struct GitVcsProvider {
     root: PathBuf,
-    /// Explicit git ref range (e.g. `main...HEAD`). None = auto-detect.
+    /// Explicit git ref range (e.g. `main...HEAD`). None = staged changes.
     diff_range: Option<String>,
-    /// TTY → auto-detect upstream range; non-TTY → staged changes (pre-commit).
-    is_tty: bool,
-    /// Cached so `diff()` and `suppressions()` share one `detect_range()` call.
-    /// Stored as `Arc<anyhow::Error>` to preserve the full anyhow context chain.
-    detected_range: std::sync::OnceLock<Result<String, std::sync::Arc<anyhow::Error>>>,
     /// When false, accept bare and single-`/` paths in ThenChange targets.
     strict: bool,
     files: Vec<String>,
@@ -25,7 +20,6 @@ impl GitVcsProvider {
     pub fn new(
         root: PathBuf,
         diff_range: Option<String>,
-        is_tty: bool,
         strict: bool,
         files: Vec<PathBuf>,
     ) -> Self {
@@ -51,21 +45,8 @@ impl GitVcsProvider {
         Self {
             root,
             diff_range,
-            is_tty,
-            detected_range: std::sync::OnceLock::new(),
             strict,
             files: normalized,
-        }
-    }
-
-    fn get_or_detect_range(&self) -> Result<&str> {
-        match self
-            .detected_range
-            .get_or_init(|| detect_range(&self.root).map_err(std::sync::Arc::new))
-        {
-            Ok(s) => Ok(s.as_str()),
-            // Clone the Arc to preserve the full anyhow context chain.
-            Err(e) => Err(anyhow::anyhow!(e.clone())),
         }
     }
 
@@ -81,14 +62,7 @@ impl VcsProvider for GitVcsProvider {
     fn diff(&self) -> Result<ChangeMap> {
         let raw = match &self.diff_range {
             Some(range) => git_diff(&self.root, range)?,
-            None => {
-                if self.is_tty {
-                    git_diff(&self.root, self.get_or_detect_range()?)?
-                } else {
-                    // Non-TTY (pre-commit hook): use staged changes.
-                    staged_diff(&self.root)?
-                }
-            }
+            None => staged_diff(&self.root)?,
         };
         udiff::parse(&mut std::io::Cursor::new(raw), strip_git_prefix).map_err(anyhow::Error::msg)
     }
@@ -96,14 +70,8 @@ impl VcsProvider for GitVcsProvider {
     fn suppressions(&self) -> Result<Option<String>> {
         let log_range = match &self.diff_range {
             Some(range) => three_dot_to_log_range(range),
-            None => {
-                if self.is_tty {
-                    three_dot_to_log_range(self.get_or_detect_range()?)
-                } else {
-                    // Staged diff has no commit range to scan.
-                    return Ok(None);
-                }
-            }
+            // Staged diff has no commit range to scan for suppressions.
+            None => return Ok(None),
         };
         Ok(parse_no_ifttt_from_commits(&self.root, &log_range))
     }
@@ -250,21 +218,6 @@ fn parse_no_ifttt_from_commits(root: &Path, log_range: &str) -> Option<String> {
         .map(|l| l.trim_start_matches("NO_IFTTT=").to_string())
 }
 
-fn detect_range(root: &Path) -> Result<String> {
-    if let Some(upstream) = rev_parse(root, "@{u}") {
-        let head = rev_parse(root, "HEAD").unwrap_or_else(|| "HEAD".to_string());
-        return Ok(format!("{upstream}...{head}"));
-    }
-
-    for base in ["origin/main", "origin/master"] {
-        if ref_exists(root, base) {
-            return Ok(format!("{base}...HEAD"));
-        }
-    }
-
-    anyhow::bail!("no upstream branch found. Provide a ref range (e.g. main...HEAD) via --diff")
-}
-
 /// No `current_dir` override — we don't have a root yet (that's what we're
 /// finding), and git searches upward from cwd automatically.
 fn detect_root() -> Option<PathBuf> {
@@ -279,33 +232,6 @@ fn detect_root() -> Option<PathBuf> {
     } else {
         None
     }
-}
-
-fn rev_parse(root: &Path, arg: &str) -> Option<String> {
-    let output = std::process::Command::new("git")
-        .args(["rev-parse", arg])
-        .current_dir(root)
-        .stderr(std::process::Stdio::null())
-        .output()
-        .ok()?;
-
-    if output.status.success() {
-        let s = String::from_utf8(output.stdout).ok()?;
-        Some(s.trim().to_string())
-    } else {
-        None
-    }
-}
-
-fn ref_exists(root: &Path, refname: &str) -> bool {
-    std::process::Command::new("git")
-        .args(["rev-parse", "--verify", refname])
-        .current_dir(root)
-        .stderr(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
 }
 
 /// Uses `rsplit_once` so only the rightmost `...` (range separator) is converted,

@@ -11,7 +11,7 @@ inputs:
     required: false
     default: ""
   args:
-    description: "Arguments to pass to ifttt-lint (e.g. '--format json --strict=false')."
+    description: "Extra arguments to pass to ifttt-lint (e.g. '--format json --strict=false')."
     required: false
     default: ""
 
@@ -32,4 +32,14 @@ runs:
 
     - name: Run ifttt-lint
       shell: bash
-      run: ifttt-lint ${{ inputs.args }}
+      env:
+        EVENT: ${{ github.event_name }}
+        BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        HEAD_SHA: ${{ github.sha }}
+      run: |
+        DIFF_ARGS=""
+        if [ "$EVENT" = "pull_request" ] && [ -n "$BASE_SHA" ]; then
+          git fetch origin "$BASE_SHA" --depth=1 2>/dev/null || true
+          DIFF_ARGS="--diff ${BASE_SHA}..${HEAD_SHA}"
+        fi
+        ifttt-lint $DIFF_ARGS ${{ inputs.args }}

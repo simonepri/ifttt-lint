@@ -46,7 +46,7 @@ fn read_file(content: Option<&str>, expected: Option<&str>) {
     if let Some(c) = content {
         std::fs::write(dir.path().join("f.txt"), c).unwrap();
     }
-    let vcs = GitVcsProvider::new(dir.path().to_path_buf(), None, true, true, vec![]);
+    let vcs = GitVcsProvider::new(dir.path().to_path_buf(), None, true, vec![]);
     assert_eq!(vcs.read_file("f.txt").unwrap().as_deref(), expected);
 }
 
@@ -54,7 +54,7 @@ fn read_file(content: Option<&str>, expected: Option<&str>) {
 fn file_exists_present_and_absent() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("present.txt"), "").unwrap();
-    let vcs = GitVcsProvider::new(dir.path().to_path_buf(), None, true, true, vec![]);
+    let vcs = GitVcsProvider::new(dir.path().to_path_buf(), None, true, vec![]);
     assert!(vcs.file_exists("present.txt").unwrap());
     assert!(!vcs.file_exists("absent.txt").unwrap());
 }
@@ -71,7 +71,7 @@ fn search_files_lint(files: &[(&str, &str)], expected: &[&str]) {
     }
     git_add_commit(dir.path(), "init");
 
-    let vcs = GitVcsProvider::new(dir.path().to_path_buf(), None, true, true, vec![]);
+    let vcs = GitVcsProvider::new(dir.path().to_path_buf(), None, true, vec![]);
     let mut found = vcs.search_files("LINT.").unwrap();
     found.sort();
     assert_eq!(found.as_slice(), expected);
@@ -93,7 +93,6 @@ fn diff_with_explicit_range_reports_added_lines() {
     let vcs = GitVcsProvider::new(
         dir.path().to_path_buf(),
         Some("HEAD~1...HEAD".to_string()),
-        true,
         true,
         vec![],
     );
@@ -117,7 +116,6 @@ fn suppressions(commit_msg: &str, expected: Option<&str>) {
     let vcs = GitVcsProvider::new(
         dir.path().to_path_buf(),
         Some("HEAD~1...HEAD".to_string()),
-        true,
         true,
         vec![],
     );
