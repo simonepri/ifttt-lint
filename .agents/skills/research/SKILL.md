@@ -1,6 +1,7 @@
 ---
 name: research
 description: Investigate a topic, library, or approach before planning. Combines user context, prior knowledge, and external sources.
+allowed-tools: Bash, Read, Glob, Grep, AskUserQuestion, Agent
 ---
 
 # Research
