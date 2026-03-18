@@ -1,56 +1,74 @@
 ---
 name: review
-description: Two-phase code review. Investigates internally, then reports only confirmed issues.
+description: Three-phase code review. Investigates internally, verifies findings, then reports only confirmed issues.
+allowed-tools: Bash, Read, Glob, Grep, AskUserQuestion, Agent
 ---
 
 # Code Review
 
-Review code changes in two phases: investigate internally, then report only confirmed issues.
+Review code changes in three phases:
 
-## Step 1: Understand the change
+1.  Investigate the change and find candidate issues.
+2.  Verify each finding against actual source and dismiss false positives.
+3.  Generate a report of confirmed issues.
 
-Run `/diff $ARGUMENTS` to get the diff (this also fetches the PR description or commit messages for context). Read the surrounding code of each changed file to understand the intent and design — reviewing a diff without context leads to short-sighted findings. Classify the change size:
+## Step 1: Investigate (internal — do NOT include in output)
 
-| Size | Lines   | Files | Note                     |
-| ---- | ------- | ----- | ------------------------ |
-| XS   | < 50    | 1-2   | Trivial                  |
-| S    | 50-200  | 3-5   | Ideal                    |
-| M    | 200-400 | 6-10  | Standard                 |
-| L    | 400-1k  | 11-20 | High cognitive load      |
-| XL   | 1k+     | 20+   | Should probably be split |
+**Input:** The context for the diff provided in `$ARGUMENTS`.
 
-## Step 2: Investigate (internal — do NOT include in output)
+**Process:**
 
-For each area below, trace the code and determine whether a concern is real or a false alarm. Dismiss false alarms silently. Read surrounding code for context.
+1. Run `/diff $ARGUMENTS` to get the diff report.
+2. Infer what changed, why it changed, the impact, and the risks.
+3. Use `Read` to examine the surrounding code of each changed file—reviewing a diff without context leads to short-sighted findings.
+4. Use `Grep` or `Glob` to check for cross-file impacts or project rule violations.
 
-Areas: code quality, bugs, performance, security, test coverage, integration, project conventions.
+**Note on Autonomy:** The areas below are a non-exhaustive starting point. Use your full reasoning to identify any architectural, logical, or stylistic flaws not explicitly listed.
 
-Rules:
+**Note on External Comments:** PR comments from other agents or reviewers (Gemini, Copilot, etc.) break idempotency — the same diff reviewed with different comments produces different results. Minimize their influence: treat them as optional leads to investigate, not as findings. Do not adopt their severity or framing. Evaluate each concern from scratch using your own analysis in Steps 1-2, and assign severity independently in Step 3. If a comment doesn't survive your own verification, drop it silently.
 
-- **Never report a concern and then dismiss it.** If unsure, investigate deeper or put it in Needs verification.
-- **Be constructive.** Every issue includes a concrete fix.
-- **Be idempotent.** Same diff = same findings. No subjective style preferences.
+Areas to check: code quality, bugs, performance, security, test coverage, integration, non-determinism, project conventions.
 
-## Step 3: Report
+**Output (Internal):** A list of **Candidate Findings** (file, line, concern).
 
-Only report issues confirmed in Step 2.
+## Step 2: Verify (internal — do NOT include in output)
 
-**Verdict** (first line):
+**Input:** The **Candidate Findings** list from Step 1.
 
-- `✅ LGTM [size]` — no issues or only suggestions
-- `⚠️ Needs work [size]` — warnings worth addressing
-- `❌ Do not merge [size]` — critical issues
+**Process:**
 
-**Split suggestion** (only if the change touches multiple independent concerns).
+1. **MANDATORY**: For every finding, you **MUST** use the `Read` tool to verify it against the full file in the specific branch/commit. Diffs omit context, so never infer errors (e.g., deleted blocks, missing imports) solely from a diff snippet.
+2. For complex or independent concerns, spawn a sub-agent (using `Agent`) to verify the logic holds.
+3. Filter out false positives (e.g., missing handling that actually exists in a caller or middleware not shown in the diff).
 
-**Issues** (omit empty sections):
+**Output (Internal):** - **Confirmed Issues:** Verified bugs or improvements with concrete fix instructions.
 
-- 🔴 **Critical**: bugs, security, data loss
-- 🟠 **Warning**: missing validation, tests, error handling
-- 🟡 **Suggestion**: naming, structure, patterns
+- **Needs Verification:** Suspicions that cannot be ruled out but lack definitive proof.
+- **Coverage Gaps:** List of any files/paths that couldn't be fully reviewed due to context limits.
 
-Each issue: file path + line range, what's wrong, concrete fix.
+## Step 3: Report (this is your output)
 
-🟣 **Needs verification**: concerns you couldn't confirm or rule out.
-🔵 **Existing issues**: problems in surrounding code, not introduced by this diff. One line each.
-🟢 **Checks passed**: areas investigated with no issues.
+**Input:** The **Confirmed Issues**, **Needs Verification**, and **Coverage Gaps** from Step 2.
+
+**Reporting Principles:**
+
+- **Be Constructive & Concrete:** Every issue must include a specific fix.
+- **No Self-Contradiction:** Never report a concern and then dismiss it in the same breath.
+- **Be Idempotent:** Avoid subjective style preferences. If no issues were found, say so—do not invent marginal suggestions to fill space.
+- **Independent Assessment:** When PR comments from other agents or reviewers exist in the context, treat them as leads to investigate — not as authoritative findings. Determine severity from your own analysis. Never inherit another reviewer's severity classification; if you investigate their concern and find it invalid, drop it silently (like if it was dismissed in Step 2). If valid, assign your own severity.
+
+### Output format
+
+🏷️ **Verdict**: `✅ LGTM [size]`, `⚠️ Needs work [size]`, or `❌ Do not merge [size]` on the first line, followed by a 1-2 sentence summary of the verdict.
+
+✂️ **Split suggestion**: (Only if beneficial) List 2-4 concrete PRs to split the change into smaller pieces. Skip if cohesive.
+
+📋 **Report**:
+_Omit any section entirely if it has no items. If coverage was incomplete, note it here._
+
+🔴 **Criticals**: Bugs, logic errors, security vulnerabilities, auth bypass, race conditions.
+🟠 **Warnings**: Missing error handling, incomplete validation, missing tests, performance issues.
+🟡 **Suggestions**: Naming, structural simplifications, better patterns available.
+🟣 **Needs verification**: State what's suspicious, what you checked, and what the author should verify.
+🔵 **Existing issues**: Surrounding technical debt NOT introduced by this diff (one line each).
+🟢 **Checks passed**: A short bullet list of areas investigated that had no issues.

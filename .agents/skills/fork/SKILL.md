@@ -1,6 +1,7 @@
 ---
 name: fork
 description: Start or end a forked session for exploring rabbit holes without losing the main conversation's context.
+allowed-tools: Bash, Read, Glob, Grep, AskUserQuestion, Agent
 ---
 
 # Fork
