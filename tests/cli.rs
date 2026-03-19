@@ -32,6 +32,14 @@ impl TestRepo {
         self.git(&["commit", "-m", msg]);
     }
 
+    fn stage(&self, path: &str) {
+        self.git(&["add", path]);
+    }
+
+    fn remove(&self, path: &str) {
+        self.git(&["rm", path]);
+    }
+
     fn run(&self) -> AssertCmd {
         let mut cmd = AssertCmd::cargo_bin("ifttt-lint").unwrap();
         cmd.current_dir(self.dir.path());
@@ -379,4 +387,259 @@ fn non_strict_double_slash_still_works() {
         .args(["--diff", "HEAD~1..HEAD", "--strict=false"])
         .assert()
         .success();
+}
+
+// ---------------------------------------------------------------------------
+// Pre-commit mode (pass_filenames: true)
+// ---------------------------------------------------------------------------
+//
+// The pre-commit hook invokes `ifttt-lint <staged-files>`. When files are
+// provided without --diff, only structural validation runs (are targets valid?
+// do labels exist?). Co-change enforcement belongs to the push hook.
+
+#[test]
+fn precommit_skips_cochange_validation() {
+    let repo = TestRepo::new();
+    repo.write(
+        "a.rs",
+        "
+        // LINT.IfChange
+        old_a
+        // LINT.ThenChange(//b.rs)
+        ",
+    );
+    repo.write("b.rs", "old_b\n");
+    repo.commit("initial");
+
+    // Stage only a.rs — co-change not enforced in pre-commit, only on push.
+    repo.write(
+        "a.rs",
+        "
+        // LINT.IfChange
+        new_a
+        // LINT.ThenChange(//b.rs)
+        ",
+    );
+    repo.stage("a.rs");
+
+    repo.run().args(["a.rs", "b.rs"]).assert().success();
+}
+
+#[test]
+fn precommit_passes_when_both_sides_staged() {
+    let repo = TestRepo::new();
+    repo.write(
+        "a.rs",
+        "
+        // LINT.IfChange
+        old_a
+        // LINT.ThenChange(//b.rs)
+        ",
+    );
+    repo.write("b.rs", "old_b\n");
+    repo.commit("initial");
+
+    repo.write(
+        "a.rs",
+        "
+        // LINT.IfChange
+        new_a
+        // LINT.ThenChange(//b.rs)
+        ",
+    );
+    repo.write("b.rs", "new_b\n");
+    repo.stage("a.rs");
+    repo.stage("b.rs");
+
+    repo.run().args(["a.rs", "b.rs"]).assert().success();
+}
+
+// ---------------------------------------------------------------------------
+// Stale-label detection
+// ---------------------------------------------------------------------------
+
+#[test]
+fn diff_detects_stale_label_after_rename() {
+    let repo = TestRepo::new();
+    repo.write(
+        "a.rs",
+        "
+        // LINT.IfChange(old_name)
+        code
+        // LINT.ThenChange(//b.rs)
+        ",
+    );
+    repo.write("b.rs", "b\n");
+    repo.write(
+        "ref.rs",
+        "
+        // LINT.IfChange
+        code
+        // LINT.ThenChange(//a.rs:old_name)
+        ",
+    );
+    repo.commit("initial");
+
+    // Rename the label — ref.rs still points to the old name.
+    repo.write(
+        "a.rs",
+        "
+        // LINT.IfChange(new_name)
+        code
+        // LINT.ThenChange(//b.rs)
+        ",
+    );
+    repo.commit("rename label");
+
+    let result = repo
+        .run()
+        .args(["--diff", "HEAD~1..HEAD"])
+        .assert()
+        .failure()
+        .code(1);
+    let stderr = String::from_utf8_lossy(&result.get_output().stderr);
+    assert!(
+        stderr.contains("old_name"),
+        "expected finding mentioning old_name not found, got: {stderr}",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// NO_IFTTT suppression
+// ---------------------------------------------------------------------------
+//
+// A commit message line `NO_IFTTT=<reason>` suppresses diff-based validation
+// for the entire diff range. Deleted-file reverse lookup is NOT suppressed.
+// Suppression is only active in --diff mode; staged (pre-commit) mode never
+// scans commit messages.
+
+#[test]
+fn no_ifttt_suppresses_diff_finding() {
+    let repo = TestRepo::new();
+    repo.write(
+        "a.rs",
+        "
+        // LINT.IfChange
+        old_a
+        // LINT.ThenChange(//b.rs)
+        ",
+    );
+    repo.write("b.rs", "old_b\n");
+    repo.commit("initial");
+
+    repo.write(
+        "a.rs",
+        "
+        // LINT.IfChange
+        new_a
+        // LINT.ThenChange(//b.rs)
+        ",
+    );
+    repo.commit("update a\n\nNO_IFTTT=docs follow in next PR");
+
+    // Without the tag this would fail; with it the diff finding is suppressed.
+    repo.run()
+        .args(["--diff", "HEAD~1..HEAD"])
+        .assert()
+        .success();
+}
+
+#[test]
+fn no_ifttt_in_any_commit_suppresses_entire_range() {
+    let repo = TestRepo::new();
+    repo.write(
+        "a.rs",
+        "
+        // LINT.IfChange
+        old_a
+        // LINT.ThenChange(//b.rs)
+        ",
+    );
+    repo.write("b.rs", "old_b\n");
+    repo.commit("initial");
+
+    // Commit 2: breaks the rule (a.rs changed, b.rs not) — would fail alone.
+    repo.write(
+        "a.rs",
+        "
+        // LINT.IfChange
+        new_a
+        // LINT.ThenChange(//b.rs)
+        ",
+    );
+    repo.commit("update a");
+
+    // Commit 3: unrelated change, carries the suppression tag.
+    repo.write("c.rs", "unrelated\n");
+    repo.commit("add c\n\nNO_IFTTT=intentional one-way sync");
+
+    // The whole HEAD~2..HEAD range is suppressed — commit 2's finding disappears.
+    repo.run()
+        .args(["--diff", "HEAD~2..HEAD"])
+        .assert()
+        .success();
+}
+
+#[test]
+fn no_ifttt_does_not_suppress_deleted_file_finding() {
+    let repo = TestRepo::new();
+    repo.write(
+        "a.rs",
+        "
+        // LINT.IfChange
+        code
+        // LINT.ThenChange(//b.rs)
+        ",
+    );
+    repo.write("b.rs", "b\n");
+    repo.commit("initial");
+
+    repo.remove("b.rs");
+    repo.commit("delete b.rs\n\nNO_IFTTT=intentional removal");
+
+    // Diff finding for a.rs is suppressed, but the deleted b.rs is still caught.
+    let result = repo
+        .run()
+        .args(["--diff", "HEAD~1..HEAD"])
+        .assert()
+        .failure()
+        .code(1);
+    let stderr = String::from_utf8_lossy(&result.get_output().stderr);
+    assert!(
+        stderr.contains("b.rs"),
+        "expected finding for deleted b.rs despite NO_IFTTT, got: {stderr}",
+    );
+}
+
+#[test]
+fn no_ifttt_inert_in_precommit_mode() {
+    let repo = TestRepo::new();
+    repo.write(
+        "a.rs",
+        "
+        // LINT.IfChange
+        old_a
+        // LINT.ThenChange(//b.rs)
+        ",
+    );
+    repo.write("b.rs", "old_b\n");
+    repo.commit("initial");
+
+    // A previous commit carries the suppression tag — irrelevant in pre-commit
+    // mode because co-change validation is skipped entirely (no diff is run).
+    repo.write("c.rs", "c\n");
+    repo.commit("add c\n\nNO_IFTTT=pre-existing suppression");
+
+    // Stage only a.rs — no co-change finding because pre-commit is structural-only.
+    repo.write(
+        "a.rs",
+        "
+        // LINT.IfChange
+        new_a
+        // LINT.ThenChange(//b.rs)
+        ",
+    );
+    repo.stage("a.rs");
+
+    repo.run().args(["a.rs", "b.rs"]).assert().success();
 }

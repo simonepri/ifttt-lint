@@ -3,7 +3,8 @@ name = "ifttt-lint"
 # LINT.IfChange(version)
 version = "0.5.3"
 # LINT.ThenChange(
-#     //readme.md:version,
+#     //readme.md:version-pre-commit,
+#     //readme.md:version-github-action,
 #     //.github/workflows/ci-cd.yml:version,
 # )
 edition = "2021"

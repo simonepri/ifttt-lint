@@ -1049,7 +1049,7 @@ fn run_case(case: &CheckCase) {
             ",
             "other.md" => "x\n",
         },
-        changes: Some(const { &[sub("docs/readme.md", &[3])] }),
+        changes: Some(const { &[sub("docs/readme.md", &[4])] }),
         expected_findings: Some(&["other.md"]),
         expected_finding_count: Some(1),
         ..DEFAULTS
@@ -1652,10 +1652,13 @@ fn deleted_file_detection(case: CheckCase) {
             ",
             "c.rs" => "fn c() {}\n",
         },
+        // b.rs has content changes but is NOT in file_list → diff pass
+        // is scoped to file_list and skips b.rs. Only the structural
+        // finding from a.rs is expected.
         changes: Some(const { &[sub("b.rs", &[2])] }),
         file_list: &["a.rs"],
-        expected_findings: Some(&["source:a.rs", "source:b.rs"]),
-        expected_finding_count: Some(2),
+        expected_findings: Some(&["source:a.rs"]),
+        expected_finding_count: Some(1),
         ..DEFAULTS
     } },
     structural_and_diff_same_file = { CheckCase {
@@ -1908,6 +1911,425 @@ fn binary_png_file_skipped() {
     } },
 )]
 fn non_strict(case: CheckCase) {
+    run_case(&case);
+}
+
+// ─── 9. Directive-only changes ───
+//
+// Adding new directive pairs, modifying ThenChange targets, or renaming
+// IfChange labels should NOT trigger diff-based validation — only content
+// between directives matters.
+
+#[parameterized(
+    new_pair_around_existing_code = { CheckCase {
+        files: files!{
+            "a.rs" => "
+                // LINT.IfChange
+                code
+                // LINT.ThenChange(//b.rs)
+            ",
+            "b.rs" => "x\n",
+        },
+        // Directive lines added, content unchanged.
+        changes: Some(&[("a.rs", &[1, 3], &[])]),
+        expected_findings: Some(&[]),
+        expected_finding_count: Some(0),
+        ..DEFAULTS
+    } },
+    new_pair_with_new_content = { CheckCase {
+        files: files!{
+            "a.rs" => "
+                // LINT.IfChange
+                new_code
+                // LINT.ThenChange(//b.rs)
+            ",
+            "b.rs" => "x\n",
+        },
+        // All lines added — new file or new block.
+        changes: Some(&[("a.rs", &[1, 2, 3], &[])]),
+        expected_findings: Some(&[]),
+        expected_finding_count: Some(0),
+        ..DEFAULTS
+    } },
+    modify_then_change_only = { CheckCase {
+        files: files!{
+            "a.rs" => "
+                // LINT.IfChange
+                code
+                // LINT.ThenChange(//b.rs, //c.rs)
+            ",
+            "b.rs" => "x\n",
+            "c.rs" => "x\n",
+        },
+        // Only ThenChange line substituted (e.g. target added).
+        changes: Some(const { &[sub("a.rs", &[3])] }),
+        expected_findings: Some(&[]),
+        expected_finding_count: Some(0),
+        ..DEFAULTS
+    } },
+    rename_if_change_label = { CheckCase {
+        files: files!{
+            "a.rs" => "
+                // LINT.IfChange(new_name)
+                code
+                // LINT.ThenChange(//b.rs)
+            ",
+            "b.rs" => "x\n",
+        },
+        // Only IfChange line substituted (label rename, content unchanged).
+        changes: Some(const { &[sub("a.rs", &[1])] }),
+        expected_findings: Some(&[]),
+        expected_finding_count: Some(0),
+        ..DEFAULTS
+    } },
+    rename_if_change_label_with_content_change = { CheckCase {
+        files: files!{
+            "a.rs" => "
+                // LINT.IfChange(new_name)
+                modified_code
+                // LINT.ThenChange(//b.rs)
+            ",
+            "b.rs" => "x\n",
+        },
+        // IfChange line AND content line both substituted simultaneously.
+        // Renaming a label while also modifying content must still trigger —
+        // the is_triggered guard only suppresses brand-new pairs (IfChange
+        // added without a matching removal at its position).
+        changes: Some(const { &[sub("a.rs", &[1, 2])] }),
+        expected_findings: Some(&["may need to be reflected in b.rs"]),
+        expected_finding_count: Some(1),
+        ..DEFAULTS
+    } },
+    empty_block_then_change_substituted = { CheckCase {
+        files: files!{
+            "a.rs" => "
+                // LINT.IfChange
+                // LINT.ThenChange(//b.rs, //c.rs)
+            ",
+            "b.rs" => "x\n",
+            "c.rs" => "x\n",
+        },
+        // ThenChange substituted on a block with no content lines.
+        // content_start > content_end — any_in_range's lo > hi guard must
+        // prevent a false positive here.
+        changes: Some(const { &[sub("a.rs", &[2])] }),
+        expected_findings: Some(&[]),
+        expected_finding_count: Some(0),
+        ..DEFAULTS
+    } },
+)]
+fn directive_only_changes(case: CheckCase) {
+    run_case(&case);
+}
+
+// ─── 10. Content changes trigger validation ───
+//
+// When guarded content between IfChange/ThenChange is modified, all targets
+// must also show changes.
+
+#[parameterized(
+    content_modified_target_untouched = { CheckCase {
+        files: files!{
+            "a.rs" => "
+                // LINT.IfChange
+                modified_code
+                // LINT.ThenChange(//b.rs)
+            ",
+            "b.rs" => "x\n",
+        },
+        // Content line substituted.
+        changes: Some(const { &[sub("a.rs", &[2])] }),
+        expected_findings: Some(&["may need to be reflected in"]),
+        expected_finding_count: Some(1),
+        ..DEFAULTS
+    } },
+    content_removed_inside_block = { CheckCase {
+        files: files!{
+            "a.rs" => "
+                // LINT.IfChange
+                remaining
+                // LINT.ThenChange(//b.rs)
+            ",
+            "b.rs" => "x\n",
+        },
+        // Content was removed; collapse point is line 2 (between directives).
+        changes: Some(&[("a.rs", &[], &[2])]),
+        expected_findings: Some(&["may need to be reflected in"]),
+        expected_finding_count: Some(1),
+        ..DEFAULTS
+    } },
+    content_modified_and_new_target = { CheckCase {
+        files: files!{
+            "a.rs" => "
+                // LINT.IfChange
+                modified
+                // LINT.ThenChange(//b.rs, //c.rs)
+            ",
+            "b.rs" => "x\n",
+            "c.rs" => "x\n",
+        },
+        // Content changed AND ThenChange replaced (new target added).
+        changes: Some(&[("a.rs", &[2, 3], &[2, 3])]),
+        expected_findings: Some(&[
+            "may need to be reflected in b.rs",
+            "may need to be reflected in c.rs",
+        ]),
+        expected_finding_count: Some(2),
+        ..DEFAULTS
+    } },
+    content_removed_and_then_change_replaced = { CheckCase {
+        files: files!{
+            "a.rs" => "
+                // LINT.IfChange
+                remaining
+                // LINT.ThenChange(//b.rs)
+            ",
+            "b.rs" => "x\n",
+        },
+        // Content line removed (collapse) AND ThenChange line replaced.
+        // This exercises the `removal_end = content_end` cap in is_triggered:
+        // the removal at the ThenChange position is excluded from the content
+        // check, but the removal at the content position still fires.
+        changes: Some(&[("a.rs", &[3], &[2, 3])]),
+        expected_findings: Some(&["may need to be reflected in b.rs"]),
+        expected_finding_count: Some(1),
+        ..DEFAULTS
+    } },
+)]
+fn content_changes_trigger(case: CheckCase) {
+    run_case(&case);
+}
+
+// ─── 11. File list scoping ───
+//
+// The file list restricts diff-based validation to listed files. Reverse
+// lookup is NOT scoped — it always runs globally.
+
+#[parameterized(
+    file_list_scopes_diff = { CheckCase {
+        files: files!{
+            "a.rs" => "
+                // LINT.IfChange
+                modified
+                // LINT.ThenChange(//target_a.rs)
+            ",
+            "b.rs" => "
+                // LINT.IfChange
+                modified
+                // LINT.ThenChange(//target_b.rs)
+            ",
+            "target_a.rs" => "x\n",
+            "target_b.rs" => "x\n",
+        },
+        // Both files have content changes.
+        changes: Some(const { &[sub("a.rs", &[2]), sub("b.rs", &[2])] }),
+        // Only a.rs in file list — b.rs's finding should NOT appear.
+        file_list: &["a.rs"],
+        expected_findings: Some(&["may need to be reflected in target_a.rs"]),
+        expected_finding_count: Some(1),
+        ..DEFAULTS
+    } },
+    file_list_no_scope_reverse_lookup = { CheckCase {
+        files: files!{
+            "ref.rs" => "
+                // LINT.IfChange
+                code
+                // LINT.ThenChange(//deleted.rs)
+            ",
+        },
+        // No file changes except deleted.
+        changes: Some(&[]),
+        deleted: &["deleted.rs"],
+        // ref.rs is NOT in file list, but reverse lookup fires globally.
+        file_list: &["other.rs"],
+        expected_findings: Some(&["target file not found: deleted.rs"]),
+        expected_finding_count: Some(1),
+        ..DEFAULTS
+    } },
+)]
+fn file_list_scoping(case: CheckCase) {
+    run_case(&case);
+}
+
+// ─── 12. Auto-populate structural validation ───
+//
+// When no file list is provided but staged changes exist, the structural
+// validation set is auto-derived from changed (non-deleted) files.
+
+#[parameterized(
+    auto_validate_staged_files = { CheckCase {
+        files: files!{
+            "a.rs" => "
+                // LINT.IfChange
+                code
+                // LINT.ThenChange(//missing.rs)
+            ",
+        },
+        // a.rs in changes (but no line-level changes). No explicit file_list.
+        changes: Some(&[("a.rs", &[], &[])]),
+        file_list: &[],
+        expected_findings: Some(&["target file not found: missing.rs"]),
+        expected_finding_count: Some(1),
+        ..DEFAULTS
+    } },
+)]
+fn auto_populate_validation(case: CheckCase) {
+    run_case(&case);
+}
+
+// ─── 13. Stale label reverse lookup ───
+//
+// When a file is modified and its labels change, surviving references from
+// other files to removed labels are caught by the reverse lookup pass.
+
+#[parameterized(
+    stale_label_removed = { CheckCase {
+        files: files!{
+            // Label was removed from a.rs.
+            "a.rs" => "
+                fn a() {}
+            ",
+            // ref.rs still references the old label.
+            "ref.rs" => "
+                // LINT.IfChange
+                code
+                // LINT.ThenChange(//a.rs:old_label)
+            ",
+        },
+        // a.rs is in the diff (was modified to remove label).
+        changes: Some(&[("a.rs", &[], &[])]),
+        file_list: &[],
+        expected_findings: Some(&["label old_label not found in a.rs"]),
+        expected_finding_count: Some(1),
+        ..DEFAULTS
+    } },
+    renamed_label = { CheckCase {
+        files: files!{
+            // Label was renamed in a.rs.
+            "a.rs" => "
+                // LINT.IfChange(new_name)
+                code
+                // LINT.ThenChange(//b.rs)
+            ",
+            "b.rs" => "x\n",
+            // ref.rs references the old name.
+            "ref.rs" => "
+                // LINT.IfChange
+                code
+                // LINT.ThenChange(//a.rs:old_name)
+            ",
+        },
+        // IfChange line substituted (rename).
+        changes: Some(const { &[sub("a.rs", &[1])] }),
+        file_list: &[],
+        expected_findings: Some(&["label old_name not found in a.rs"]),
+        expected_finding_count: Some(1),
+        ..DEFAULTS
+    } },
+    moved_label = { CheckCase {
+        files: files!{
+            // Label moved away from a.rs.
+            "a.rs" => "
+                fn a() {}
+            ",
+            // Label now lives in b.rs.
+            "b.rs" => "
+                // LINT.IfChange(moved_label)
+                code
+                // LINT.ThenChange(//c.rs)
+            ",
+            "c.rs" => "x\n",
+            // ref.rs still points to the old location.
+            "ref.rs" => "
+                // LINT.IfChange
+                code
+                // LINT.ThenChange(//a.rs:moved_label)
+            ",
+        },
+        // Both a.rs and b.rs changed.
+        changes: Some(&[("a.rs", &[], &[]), ("b.rs", &[1, 2, 3], &[])]),
+        file_list: &[],
+        expected_findings: Some(&["label moved_label not found in a.rs"]),
+        expected_finding_count: Some(1),
+        ..DEFAULTS
+    } },
+    valid_label_no_false_positive = { CheckCase {
+        files: files!{
+            // Labels intact in a.rs.
+            "a.rs" => "
+                // LINT.IfChange(my_label)
+                code
+                // LINT.ThenChange(//b.rs)
+            ",
+            "b.rs" => "x\n",
+            // ref.rs correctly references the label.
+            "ref.rs" => "
+                // LINT.IfChange
+                code
+                // LINT.ThenChange(//a.rs:my_label)
+            ",
+        },
+        // Content changed in a.rs, labels intact.
+        changes: Some(const { &[sub("a.rs", &[2])] }),
+        file_list: &[],
+        // Diff finding fires (b.rs not changed), but NO stale-label finding.
+        expected_findings: Some(&["may need to be reflected in b.rs"]),
+        expected_finding_count: Some(1),
+        ..DEFAULTS
+    } },
+    stale_label_when_ref_file_also_in_diff = { CheckCase {
+        files: files!{
+            // a.rs has a renamed label.
+            "a.rs" => "
+                // LINT.IfChange(new_name)
+                code
+                // LINT.ThenChange(//b.rs)
+            ",
+            "b.rs" => "x\n",
+            // ref.rs is also a changed file and still references the old label.
+            "ref.rs" => "
+                // LINT.IfChange
+                code
+                // LINT.ThenChange(//a.rs:old_name)
+            ",
+        },
+        // Both a.rs and ref.rs are in the diff. With derived_validate_files,
+        // file_list_set = {a.rs, ref.rs}: reverse lookup skips ref.rs, but
+        // the structural pass handles ref.rs and catches the stale label
+        // (the pair is not triggered — no sorted changes affect its content).
+        changes: Some(const { &[sub("a.rs", &[1]), ("ref.rs", &[], &[])] }),
+        file_list: &[],
+        expected_findings: Some(&["label old_name not found in a.rs"]),
+        expected_finding_count: Some(1),
+        ..DEFAULTS
+    } },
+    partial_label_removal = { CheckCase {
+        files: files!{
+            // a.rs originally had IfChange(foo) and IfChange(bar); foo was removed.
+            "a.rs" => "
+                // LINT.IfChange(bar)
+                bar_body
+                // LINT.ThenChange(//c.rs)
+            ",
+            "c.rs" => "x\n",
+            // ref.rs still references the removed foo label.
+            "ref.rs" => "
+                // LINT.IfChange
+                code
+                // LINT.ThenChange(//a.rs:foo)
+            ",
+        },
+        // a.rs is in the diff with removals (the foo pair was deleted).
+        // removed_new_pos=[1] signals that lines were removed from the file,
+        // triggering the label_sets guard to include a.rs in the reverse lookup.
+        changes: Some(&[("a.rs", &[], &[1])]),
+        file_list: &[],
+        expected_findings: Some(&["label foo not found in a.rs"]),
+        expected_finding_count: Some(1),
+        ..DEFAULTS
+    } },
+)]
+fn stale_label_reverse_lookup(case: CheckCase) {
     run_case(&case);
 }
 

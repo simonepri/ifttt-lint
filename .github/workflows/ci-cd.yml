@@ -34,7 +34,7 @@ jobs:
       - run: pre-commit run --all-files
 
   action:
-    name: Action
+    name: IfThisThanThat
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -102,8 +102,9 @@ jobs:
 
           # LINT.IfChange(version)
           VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          # LINT.ThenChange(//Cargo.toml:version, //readme.md:version-pre-commit, //readme.md:version-github-action)
           sed -i "s/rev: v[0-9][0-9.]*/rev: v${VERSION}/" readme.md
-          # LINT.ThenChange(//Cargo.toml:version, //readme.md:version)
+          sed -i "s|ifttt-lint@v[0-9][0-9.]*|ifttt-lint@v${VERSION}|g" readme.md
 
           if ! git diff --quiet readme.md; then
             git config user.name "github-actions[bot]"

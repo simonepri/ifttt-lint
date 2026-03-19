@@ -183,46 +183,48 @@ This repository dogfoods its own directives to keep the crate version in sync ac
 
 ### pre-commit (recommended)
 
-<!-- LINT.IfChange(version) -->
+<!-- LINT.IfChange(version-pre-commit) -->
 
 ```yaml
-# .pre-commit-config.yaml
 - repo: https://github.com/simonepri/ifttt-lint
   rev: v0.5.3
   hooks:
     - id: ifttt-lint
+    - id: ifttt-lint-diff
 ```
 
 <!-- LINT.ThenChange(//Cargo.toml:version, //.github/workflows/ci-cd.yml:version) -->
 
-> [!NOTE]
-> The hook validates the diff against your git upstream and also runs a structural validity check on every staged file, confirming that all `ThenChange` targets and labels exist on disk.
+Two hooks serve different purposes:
+
+- **`ifttt-lint`** — runs at every commit on the staged files. Checks that all `ThenChange` targets and labels exist on disk, directives are properly paired, and syntax is valid. Also supports `pre-commit run --all-files` for full-repo structural scans.
+
+- **`ifttt-lint-diff`** — runs at every push on all files in the diff range. Checks that co-dependent files are updated together. Supports `NO_IFTTT` suppression via commit messages. Mirrors the `pull_request` GitHub Actions check — same diff range, same suppression mechanism.
 
 ### GitHub Actions
 
-```yaml
-- uses: actions/checkout@v4
-- uses: simonepri/ifttt-lint@main
-```
-
-The CLI auto-detects the git upstream diff. Pass `args` for customization:
+<!-- LINT.IfChange(version-github-action) -->
 
 ```yaml
-- uses: simonepri/ifttt-lint@main
-  with:
-    args: "--diff main...HEAD --format json --strict=false"
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  ifttt-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: simonepri/ifttt-lint@v0.5.3
 ```
 
-### Manual
+<!-- LINT.ThenChange(//Cargo.toml:version, //.github/workflows/ci-cd.yml:version) -->
 
-```bash
-cargo install ifttt-lint
+The action mirrors the two hooks:
 
-ifttt-lint                              # auto-detect git upstream
-ifttt-lint --diff main...HEAD           # explicit ref range
-ifttt-lint src/**/*.rs                  # structural-only (no diff)
-ifttt-lint --diff main...HEAD src/**/*.rs  # diff + structural
-```
+- **`pull_request`** — diff validation equivalent to `ifttt-lint-diff`. Validates co-changes across all commits in the PR. Supports `NO_IFTTT` suppression via commit messages.
+- **`push`** — structural validation on all tracked files, equivalent to `ifttt-lint '*'`. Use `on.push.branches` to control which branches run it.
 
 ## CLI Reference
 
@@ -230,9 +232,9 @@ ifttt-lint --diff main...HEAD src/**/*.rs  # diff + structural
 ifttt-lint [OPTIONS] [FILES]...
 ```
 
-| Argument   | Description                                                                                                                                  |
-| ---------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| `FILES...` | Files to validate structurally: checks that every `ThenChange` target and label exists on disk, regardless of whether the file was modified. |
+| Argument   | Description                                                                                                                                                                                                                                                |
+| ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `FILES...` | Files to validate structurally: checks that every `ThenChange` target and label exists on disk, regardless of whether the file was modified. Supports glob patterns (e.g. `'*'`) — resolved internally via `git ls-files` to avoid shell `ARG_MAX` limits. |
 
 | Option                   | Description                                                                                                                                      |
 | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -297,7 +299,7 @@ NO_IFTTT=docs will be updated in a follow-up
 ```
 
 > [!NOTE]
-> The tool parses `NO_IFTTT` tags from commit messages automatically and suppresses diff-based findings for that range. Structural validity checks (from `[FILES]...`) and reverse-lookup for deleted targets still run.
+> In `--diff` mode (pre-push hook, CI), the tool parses `NO_IFTTT` tags from commit messages and suppresses diff-based findings for that range. Structural validity checks (from `[FILES]...`) and reverse-lookup for deleted targets still run.
 
 To permanently ignore targets, use `--ignore`:
 
@@ -331,6 +333,176 @@ Use `--strict=false` for Google-compatible behavior — bare paths (`path/to/fil
 ### Label Format
 
 Labels must start with a letter, followed by letters, digits, underscores, dashes, or dots. For example: `upload_limit`, `user-response`, `section2`, `Payments.Pix.Result`.
+
+## Validation Rules
+
+`ifttt-lint` runs up to three validation passes depending on how it's invoked. This section documents when each pass runs and what it checks.
+
+### CLI modes
+
+| Invocation                         | Hook stage   | What runs                                                                                                                        |
+| ---------------------------------- | ------------ | -------------------------------------------------------------------------------------------------------------------------------- |
+| `ifttt-lint` (no staged changes)   | —            | Nothing — exits 0                                                                                                                |
+| `ifttt-lint` (with staged changes) | —            | Structural + diff validation on all staged (non-deleted) files. Reverse lookup for deleted files and stale labels                |
+| `ifttt-lint FILES…` (no `--diff`)  | `pre-commit` | Structural validation on listed files only                                                                                       |
+| `ifttt-lint '*'` (no `--diff`)     | CI, manual   | Structural validation on all tracked files (glob expanded via `git ls-files`)                                                    |
+| `ifttt-lint --diff REF FILES…`     | —            | Structural validation on listed files. Diff validation scoped to listed files. Reverse lookup for deleted files and stale labels |
+| `ifttt-lint --diff REF` (no files) | `pre-push`   | Structural + diff validation on all files in the diff. Reverse lookup for deleted files and stale labels                         |
+
+> **Note** — unstaged changes are invisible to `ifttt-lint` in default mode. Stage with `git add` first, or use `--diff` to compare against a branch.
+
+### Diff-based validation
+
+When an `IfChange`…`ThenChange` block is present in a changed file, the tool checks whether the **guarded content** (lines between the directives) was modified. If it was, every `ThenChange` target must also show changes in the same diff — otherwise a finding is reported.
+
+Changes to the directive lines themselves (adding a new pair, renaming a label, adding or removing a `ThenChange` target) do **not** trigger validation — only content between the directives matters.
+
+**Fires:**
+
+A field is added to the Go struct but the TypeScript mirror is not updated:
+
+```diff
+  // LINT.IfChange(user_response)
+  type UserResponse struct {
+      ID    string `json:"id"`
+      Name  string `json:"name"`
++     Avatar string `json:"avatar"`
+  }
+  // LINT.ThenChange(//web/src/types.ts:user_response)
+```
+
+```
+api/types.go:1: warning: changes in this block may need to be reflected in web/src/types.ts:user_response
+```
+
+Content is modified and a new target is added in the same diff — all targets (including the new one) must reflect the change, because you're declaring a dependency while simultaneously changing the content it guards:
+
+```diff
+  // LINT.IfChange(upload_limit)
+- MAX_UPLOAD_SIZE_MB = 50
++ MAX_UPLOAD_SIZE_MB = 100
+- // LINT.ThenChange(//docs/api.md:upload_limit)
++ // LINT.ThenChange(
++ //     //docs/api.md:upload_limit,
++ //     //alerts/thresholds.yaml:upload_limit,
++ // )
+```
+
+```
+config/upload.py:1: warning: changes in this block may need to be reflected in docs/api.md:upload_limit
+config/upload.py:1: warning: changes in this block may need to be reflected in alerts/thresholds.yaml:upload_limit
+```
+
+**Does not fire:**
+
+Adding a new directive pair around existing code — the directive is being established, not the content changed:
+
+```diff
++ // LINT.IfChange(speed_threshold)
+  SPEED_THRESHOLD_MPH = 88
++ // LINT.ThenChange(//docs/delorean.md:speed_threshold)
+```
+
+Adding a new target to an existing directive — directive metadata changed, not guarded content:
+
+```diff
+  // LINT.IfChange(rate_limit)
+  RATE_LIMIT_RPS = 100
+- // LINT.ThenChange(//docs/api.md:rate_limits)
++ // LINT.ThenChange(
++ //     //docs/api.md:rate_limits,
++ //     //alerts/thresholds.yaml:rate_limits,
++ // )
+```
+
+Renaming a label — directive metadata changed; stale references are caught by the reverse lookup instead:
+
+```diff
+- // LINT.IfChange(old_name)
++ // LINT.IfChange(new_name)
+  SPEED_THRESHOLD_MPH = 88
+  // LINT.ThenChange(//docs/delorean.md:speed_threshold)
+```
+
+Both sides updated in the same diff — the target already reflects the change:
+
+```diff
+  // LINT.IfChange(upload_limit)
+- MAX_UPLOAD_SIZE_MB = 50
++ MAX_UPLOAD_SIZE_MB = 100
+  // LINT.ThenChange(//docs/api.md:upload_limit)
+```
+
+```diff
+  <!-- LINT.IfChange(upload_limit) -->
+- Files up to 50 MB are accepted.
++ Files up to 100 MB are accepted.
+  <!-- LINT.ThenChange(//config/upload.py:upload_limit) -->
+```
+
+Suppressed via `NO_IFTTT` in the commit message — explicitly opted out:
+
+```
+feat: raise upload limit to 100 MB
+
+NO_IFTTT=docs will be updated in a follow-up
+```
+
+### Suppression
+
+When a change is intentional and the synchronization will happen separately, add a `NO_IFTTT=<reason>` line anywhere in the commit message:
+
+```
+feat: raise upload limit to 100 MB
+
+NO_IFTTT=docs and alerts will be updated in a follow-up PR
+```
+
+**Scope.** Suppression applies to the **entire diff range** scanned in a single run — not just the commit the tag appears in. Each context runs once, not once per commit, so the range always covers every commit in the scan:
+
+| Context                            | Diff range                                   | Commit messages scanned                |
+| ---------------------------------- | -------------------------------------------- | -------------------------------------- |
+| pre-push hook                      | `FROM_REF..TO_REF` (all unpushed commits)    | All unpushed commits                   |
+| Pull request (CI)                  | `BASE_SHA..HEAD_SHA` (all commits in the PR) | All commits in the PR                  |
+| Push to main (squash merge, CI)    | `BEFORE..HEAD` (1 commit)                    | That squashed commit                   |
+| Push to main (rebase merge, N, CI) | `BEFORE..HEAD` (all N commits)               | All N commits                          |
+| Push to main (merge commit, CI)    | `BEFORE..HEAD` (merge + PR branch commits)   | Merge commit and all PR branch commits |
+
+A single `NO_IFTTT` line in **any** of the scanned commit messages suppresses all diff-based findings for the entire range. For example, in a 5-commit PR, adding `NO_IFTTT=reason` to any one commit suppresses the whole PR's diff check.
+
+**What is suppressed.** Diff-based validation is disabled — the tool no longer checks whether `ThenChange` targets were also updated.
+
+**What is NOT suppressed.**
+
+- **Structural validation** — broken directive syntax, missing targets, and non-existent labels are still caught.
+- **Deleted-file reverse lookup** — if a file is deleted in the diff, surviving references to it are still flagged even when `NO_IFTTT` is present.
+
+**Mode restriction.** `NO_IFTTT` only works in `--diff` mode (pre-push hook and CI). It has no effect in structural-only mode (`ifttt-lint FILES…` without `--diff`), because there is no commit range to scan for the tag.
+
+### Structural validation
+
+When files are passed as positional arguments (`FILES…`), or when running against staged changes without a file list, the tool checks directive structure regardless of the diff. This catches issues that diff-based validation can't see — broken references, missing targets, malformed syntax.
+
+| Check                                  | Example message                               |
+| -------------------------------------- | --------------------------------------------- |
+| ThenChange target file doesn't exist   | `target file not found: web/src/old_types.ts` |
+| ThenChange label not found in target   | `label upload_limit not found in docs/api.md` |
+| IfChange without matching ThenChange   | `LINT.IfChange without matching ThenChange`   |
+| ThenChange without preceding IfChange  | `LINT.ThenChange without preceding IfChange`  |
+| Duplicate IfChange labels in same file | `duplicate LINT.IfChange label foo`           |
+
+### Reverse lookup
+
+When a file is **deleted**, the tool walks the repository to find surviving files that still reference it via `ThenChange` and flags each as a stale reference.
+
+When a file is **modified** and may have had `IfChange` labels added, renamed, or removed, the tool verifies that all `ThenChange` references from other files still point to valid labels. This catches label renames and deletions — including labels moved to a different file.
+
+```
+api/types.go:7: warning: target file not found: web/src/old_types.ts
+config/upload.py:3: warning: label old_name not found in constants.py
+```
+
+Reverse lookup always runs globally — it is not scoped by the file list.
 
 ## Supported Languages
 
