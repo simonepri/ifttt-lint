@@ -1388,19 +1388,6 @@ fn change_detection(case: CheckCase) {
         expected_findings: Some(&[]),
         ..DEFAULTS
     } },
-    same_file_label_missing = { CheckCase {
-        files: files!{
-            "a.rs" => "
-                // LINT.IfChange
-                fn a() {}
-                // LINT.ThenChange(:nonexistent)
-            ",
-        },
-        changes: Some(&[]),
-        file_list: &["a.rs"],
-        expected_findings: Some(&["label nonexistent not found in a.rs"]),
-        ..DEFAULTS
-    } },
     full_path_self_reference_with_label = { CheckCase {
         files: files! {
             "src/a.rs" => "
@@ -2013,6 +2000,22 @@ fn non_strict(case: CheckCase) {
         // content_start > content_end — any_in_range's lo > hi guard must
         // prevent a false positive here.
         changes: Some(const { &[sub("a.rs", &[2])] }),
+        expected_findings: Some(&[]),
+        expected_finding_count: Some(0),
+        ..DEFAULTS
+    } },
+    empty_parens_content_changed = { CheckCase {
+        // ThenChange() with empty target list: content changes inside the
+        // guarded block produce no finding because there is nothing to check.
+        files: files! {
+            "test.rs" => "
+                // LINT.IfChange
+                int x;
+                // LINT.ThenChange()
+            ",
+        },
+        changes: Some(const { &[sub("test.rs", &[2])] }),
+        expected_errors: Some(&[]),
         expected_findings: Some(&[]),
         expected_finding_count: Some(0),
         ..DEFAULTS

@@ -14,7 +14,6 @@ use ifttt_lint::{check, reports, vcs_git};
 )]
 struct Cli {
     /// Git ref range to diff (e.g. main...HEAD).
-    /// Default: staged changes (git diff --cached).
     #[arg(short, long)]
     diff: Option<String>,
 
@@ -52,6 +51,11 @@ fn main() {
         .build_global()
     {
         eprintln!("warning: failed to configure thread pool: {e}");
+    }
+
+    if cli.files.is_empty() && cli.diff.is_none() {
+        eprintln!("Nothing to check — pass FILES for structural validation or --diff RANGE for diff validation.");
+        process::exit(0);
     }
 
     let root = match vcs_git::GitVcsProvider::resolve_root() {

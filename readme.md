@@ -7,7 +7,7 @@
   🔗 IfThisThenThat linter — enforce atomic cross-file changes via <code>LINT.IfChange</code> / <code>LINT.ThenChange</code> directives.
   <br/>
   <sub>
-    Open Source implementation of <a href="https://www.chromium.org/chromium-os/developer-library/guides/development/keep-files-in-sync/">Google's internal IfThisThenThat linter</a>, written in Rust, scales to large monorepos.
+    Open-source Rust implementation of <a href="https://www.chromium.org/chromium-os/developer-library/guides/development/keep-files-in-sync/">Google's internal IfThisThenThat linter</a>.
   </sub>
 </p>
 <p align="center">
@@ -15,7 +15,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/github/license/simonepri/ifttt-lint.svg" alt="license" /></a>
 </p>
 
-## Synopsis
+## The Problem
 
 You add a field to a Go struct and forget the TypeScript mirror. You bump a constant and forget the docs. You rename a database column and forget the migration. You only discover it when something breaks in production — or worse, when a user reports it weeks later.
 
@@ -23,11 +23,9 @@ Code review doesn't catch it: reviewers look at the diff, not the five other fil
 
 `ifttt-lint` catches it. You wrap co-dependent sections in `LINT.IfChange` / `LINT.ThenChange` comment directives — the IfChangeThenChange pattern. When a diff touches one side but not the other, the tool fails — before the change reaches production. It's stupidly simple, and that's why it works.
 
-It is not a replacement for DRY — it is a safety net for the cases where DRY can't help, when duplication crosses language, directory, or system boundaries. For example this repo [dogfoods ittt directives](#used-in-this-repo) to keep the tool version in sync across [`Cargo.toml`](Cargo.toml), the [pre-commit config](#pre-commit-recommended), and the [CI release pipeline](.github/workflows/ci-cd.yml).
+The pattern is not new — [Google's internal IfThisThenThat linter](https://www.chromium.org/chromium-os/developer-library/guides/development/keep-files-in-sync/) has enforced it across Chromium, TensorFlow, and Fuchsia for over a decade. It's the kind of tool you use once a quarter and miss every day it's gone. No open-source equivalent existed — so this is it.
 
-The pattern is not new — [Google's internal IfThisThenThat linter](https://www.chromium.org/chromium-os/developer-library/guides/development/keep-files-in-sync/) has enforced it across Chromium, TensorFlow, Fuchsia and virtually any other Google project for over a decade. It's the kind of tool you (hopefully) use once a quarter but miss every day it's gone. As an engineer at Google I took it for granted; when I left, nothing outside implemented this.
-
-<sub>1. [if-changed](https://github.com/mathematic-inc/if-changed), [ifttt-lint](https://github.com/ebrevdo/ifttt-lint), and [ifchange](https://github.com/slnc/ifchange), exist but use different syntax and aren't [validated on large-scale repos](#performance). For background on the pattern see [IfChange/ThenChange](https://filiph.net/text/ifchange-thenchange.html), [Syncing Code](https://steve.dignam.xyz/2025/05/28/syncing-code/), and [Fuchsia presubmit checks](https://fuchsia.dev/fuchsia-src/development/source_code/presubmit_checks).</sub>
+It is not a replacement for DRY — it is a safety net for the cases where DRY can't help, when duplication crosses language, directory, or system boundaries. For example, this repo [dogfoods ifttt directives](#used-in-this-repo) to keep the tool version in sync across [`Cargo.toml`](Cargo.toml), the [pre-commit config](#pre-commit-recommended), and the [CI release pipeline](.github/workflows/ci-cd.yml).
 
 ## Usage
 
@@ -179,6 +177,23 @@ The directives above are inside a fenced code block, so the linter skips them en
 
 This repository dogfoods its own directives to keep the crate version in sync across [`Cargo.toml`](Cargo.toml), the [pre-commit config](#pre-commit-recommended) in this file, and the [CI release pipeline](.github/workflows/ci-cd.yml). If any of the three drifts, the linter catches it before merge.
 
+## Performance
+
+`ifttt-lint` is designed to add negligible overhead to your CI pipeline. In **diff mode**, only files touched by the diff are read and parsed. The optional **structural validity pass** (triggered by `[FILES]...`) validates that all targets and labels referenced in the listed files exist on disk, reading only the files actually passed — no full-repo scan required.
+
+When the diff **deletes** (or renames) a file, a **reverse-lookup pass** walks the repo to find surviving files that still reference the deleted target. This is the only scenario that triggers a repo-wide scan. The walk runs once (not once per deleted file) and uses two cheap substring filters to skip the vast majority of files before parsing: first, does the file contain `LINT.`? If not, skip. Then, does it mention any of the deleted paths? If not, skip. Files already parsed in earlier passes reuse their cached result. The walk uses `git grep` to discover candidates, which only searches tracked files and respects `.gitignore`. Untracked files containing LINT directives that reference a deleted target will not be caught — commit or stage them first.
+
+**Real-world** (structural validation, M-series MacBook):
+
+| Repository                                             | Tracked files | Files with directives | 1 thread | 2 threads        | 4 threads    |
+| ------------------------------------------------------ | ------------: | --------------------: | -------- | ---------------- | ------------ |
+| [Chromium](https://github.com/chromium/chromium)       | 488k (~3.9GB) |          1.7k (~39MB) | 1.9 s    | **0.9 s** (2.0×) | 1.2 s (1.6×) |
+| [TensorFlow](https://github.com/tensorflow/tensorflow) |  36k (~402MB) |          244 (~5.3MB) | 0.3 s    | **0.2 s** (1.3×) | 0.3 s (1.3×) |
+
+<sub>Structural validation on M-series MacBook. Reproduce with `cargo smoke`.</sub>
+
+The default thread count is **2** (`--threads 0`), which gives near-optimal throughput. Higher counts hit filesystem I/O contention and degrade.
+
 ## Setup
 
 ### pre-commit (recommended)
@@ -238,7 +253,7 @@ ifttt-lint [OPTIONS] [FILES]...
 
 | Option                   | Description                                                                                                                                      |
 | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `-d, --diff <RANGE>`     | Git ref range to diff (e.g. `main...HEAD`). Default: auto-detect git upstream (TTY) or staged changes (piped, for pre-commit hooks)              |
+| `-d, --diff <RANGE>`     | Git ref range to diff (e.g. `main...HEAD`)                                                                                                       |
 | `-t, --threads <N>`      | Worker thread count (default: 2; 0 = same as 2)                                                                                                  |
 | `-i, --ignore <PATTERN>` | Permanently ignore target pattern, repeatable (glob syntax)                                                                                      |
 | `--strict=false`         | Accept bare and single-`/` paths in `ThenChange` targets (in addition to `//`). Required for codebases that use Google-internal path conventions |
@@ -328,7 +343,7 @@ ifttt-lint --ignore "generated/*" --ignore "*.lock"
 - `:` separates file path from label (splits on last `:`)
 - `:label` alone means same-file reference
 
-Use `--strict=false` for Google-compatible behavior — bare paths (`path/to/file`), single-`/` paths (`/path/to/file`), explicit same-file path references (`//same-file.h:label` instead of `:label`), and single-`/` paths are all accepted without warnings.
+Use `--strict=false` for Google-compatible behavior — bare paths (`path/to/file`), single-`/` paths (`/path/to/file`), and explicit same-file path references (`//same-file.h:label` instead of `:label`) are all accepted without warnings.
 
 ### Label Format
 
@@ -342,14 +357,11 @@ Labels must start with a letter, followed by letters, digits, underscores, dashe
 
 | Invocation                         | Hook stage   | What runs                                                                                                                        |
 | ---------------------------------- | ------------ | -------------------------------------------------------------------------------------------------------------------------------- |
-| `ifttt-lint` (no staged changes)   | —            | Nothing — exits 0                                                                                                                |
-| `ifttt-lint` (with staged changes) | —            | Structural + diff validation on all staged (non-deleted) files. Reverse lookup for deleted files and stale labels                |
+| `ifttt-lint` (no args)             | —            | Nothing — exits 0 with a hint                                                                                                    |
 | `ifttt-lint FILES…` (no `--diff`)  | `pre-commit` | Structural validation on listed files only                                                                                       |
 | `ifttt-lint '*'` (no `--diff`)     | CI, manual   | Structural validation on all tracked files (glob expanded via `git ls-files`)                                                    |
 | `ifttt-lint --diff REF FILES…`     | —            | Structural validation on listed files. Diff validation scoped to listed files. Reverse lookup for deleted files and stale labels |
 | `ifttt-lint --diff REF` (no files) | `pre-push`   | Structural + diff validation on all files in the diff. Reverse lookup for deleted files and stale labels                         |
-
-> **Note** — unstaged changes are invisible to `ifttt-lint` in default mode. Stage with `git add` first, or use `--diff` to compare against a branch.
 
 ### Diff-based validation
 
@@ -450,15 +462,9 @@ NO_IFTTT=docs will be updated in a follow-up
 
 ### Suppression
 
-When a change is intentional and the synchronization will happen separately, add a `NO_IFTTT=<reason>` line anywhere in the commit message:
+`NO_IFTTT=<reason>` in any commit message in the scanned range suppresses diff-based validation for the entire range. See [Suppressing Findings](#suppressing-findings) for syntax details.
 
-```
-feat: raise upload limit to 100 MB
-
-NO_IFTTT=docs and alerts will be updated in a follow-up PR
-```
-
-**Scope.** Suppression applies to the **entire diff range** scanned in a single run — not just the commit the tag appears in. Each context runs once, not once per commit, so the range always covers every commit in the scan:
+**Scope** — each context scans exactly one range:
 
 | Context                            | Diff range                                   | Commit messages scanned                |
 | ---------------------------------- | -------------------------------------------- | -------------------------------------- |
@@ -468,20 +474,11 @@ NO_IFTTT=docs and alerts will be updated in a follow-up PR
 | Push to main (rebase merge, N, CI) | `BEFORE..HEAD` (all N commits)               | All N commits                          |
 | Push to main (merge commit, CI)    | `BEFORE..HEAD` (merge + PR branch commits)   | Merge commit and all PR branch commits |
 
-A single `NO_IFTTT` line in **any** of the scanned commit messages suppresses all diff-based findings for the entire range. For example, in a 5-commit PR, adding `NO_IFTTT=reason` to any one commit suppresses the whole PR's diff check.
-
-**What is suppressed.** Diff-based validation is disabled — the tool no longer checks whether `ThenChange` targets were also updated.
-
-**What is NOT suppressed.**
-
-- **Structural validation** — broken directive syntax, missing targets, and non-existent labels are still caught.
-- **Deleted-file reverse lookup** — if a file is deleted in the diff, surviving references to it are still flagged even when `NO_IFTTT` is present.
-
-**Mode restriction.** `NO_IFTTT` only works in `--diff` mode (pre-push hook and CI). It has no effect in structural-only mode (`ifttt-lint FILES…` without `--diff`), because there is no commit range to scan for the tag.
+Structural validation and deleted-file reverse lookup always run regardless of `NO_IFTTT`. The tag has no effect without `--diff`.
 
 ### Structural validation
 
-When files are passed as positional arguments (`FILES…`), or when running against staged changes without a file list, the tool checks directive structure regardless of the diff. This catches issues that diff-based validation can't see — broken references, missing targets, malformed syntax.
+When files are passed as positional arguments (`FILES…`), the tool checks directive structure regardless of the diff. This catches issues that diff-based validation can't see — broken references, missing targets, malformed syntax.
 
 | Check                                  | Example message                               |
 | -------------------------------------- | --------------------------------------------- |
@@ -522,25 +519,6 @@ Multi-syntax: Vue/Svelte (`//`, `/*`, `<!--`), PHP (`//`, `/*`, `#`), Terraform 
 
 Unknown extensions fall back to `//`, `/*`, `#`.
 
-## Performance
-
-`ifttt-lint` is designed to add negligible overhead to your CI pipeline. In **diff mode** (the default), only files touched by the PR are read and parsed. The optional **structural validity pass** (triggered by `[FILES]...`) validates that all targets and labels referenced in the listed files exist on disk, reading only the files actually passed — no full-repo scan required.
-
-When the diff **deletes** (or renames) a file, a **reverse-lookup pass** walks the repo to find surviving files that still reference the deleted target. This is the only scenario that triggers a repo-wide scan. The walk runs once (not once per deleted file) and uses two cheap substring filters to skip the vast majority of files before parsing: first, does the file contain `LINT.`? If not, skip. Then, does it mention any of the deleted paths? If not, skip. Files already parsed in earlier passes reuse their cached result. The walk uses `git grep` to discover candidates, which only searches tracked files and respects `.gitignore`. Untracked files containing LINT directives that reference a deleted target will not be caught — commit or stage them first.
-
-This is possible because the tool skips files that don't contain `LINT.` directives (a simple substring check), parses directive syntax with a [data-driven scanner](src/languages.rs), parallelizes file I/O across cores with [rayon](https://crates.io/crates/rayon), and uses sorted line indices with binary search for efficient range-overlap queries during validation.
-
-**Real-world** (structural validation, M-series MacBook):
-
-| Repository                                             | Tracked files | Files with directives | 1 thread | 2 threads        | 4 threads    |
-| ------------------------------------------------------ | ------------: | --------------------: | -------- | ---------------- | ------------ |
-| [Chromium](https://github.com/chromium/chromium)       | 488k (~3.9GB) |          1.7k (~39MB) | 1.9 s    | **0.9 s** (2.0×) | 1.2 s (1.6×) |
-| [TensorFlow](https://github.com/tensorflow/tensorflow) |  36k (~402MB) |          244 (~5.3MB) | 0.3 s    | **0.2 s** (1.3×) | 0.3 s (1.3×) |
-
-<sub>Structural validation on M-series MacBook. Reproduce with `cargo smoke`.</sub>
-
-The default thread count is **2** (`--threads 0`), which gives near-optimal throughput. Higher counts hit filesystem I/O contention and degrade.
-
 ## FAQ
 
 ### Why not use types, codegen, or a shared schema?
@@ -570,3 +548,7 @@ Currently only Git is supported. The core validation logic is VCS-agnostic — a
 ### My language isn't in the supported list — can I add it?
 
 Yes, please contribute! Adding a new language is just a new entry in the [comment-style table](src/languages.rs) — no changes to the parser or validation engine. PRs welcome; [open an issue](../../issues) if you're unsure about the comment syntax.
+
+### Are there other implementations?
+
+[if-changed](https://github.com/mathematic-inc/if-changed), [ifttt-lint](https://github.com/ebrevdo/ifttt-lint), and [ifchange](https://github.com/slnc/ifchange) exist but use different syntax and aren't validated on large-scale repos. For background on the pattern, see [IfChange/ThenChange](https://filiph.net/text/ifchange-thenchange.html), [Syncing Code](https://steve.dignam.xyz/2025/05/28/syncing-code/), and [Fuchsia presubmit checks](https://fuchsia.dev/fuchsia-src/development/source_code/presubmit_checks).

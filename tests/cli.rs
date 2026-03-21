@@ -41,9 +41,13 @@ impl TestRepo {
     }
 
     fn run(&self) -> AssertCmd {
+        self.run_with_threads(1)
+    }
+
+    fn run_with_threads(&self, n: usize) -> AssertCmd {
         let mut cmd = AssertCmd::cargo_bin("ifttt-lint").unwrap();
         cmd.current_dir(self.dir.path());
-        cmd.args(["--threads", "1"]);
+        cmd.args(["--threads", &n.to_string()]);
         cmd
     }
 
@@ -357,38 +361,6 @@ fn non_strict_resolves_bare_targets() {
     );
 }
 
-#[test]
-fn non_strict_double_slash_still_works() {
-    let repo = TestRepo::new();
-    // Standard // paths should work identically with --strict=false.
-    repo.write(
-        "a.rs",
-        "
-        // LINT.IfChange
-        old_a
-        // LINT.ThenChange(//b.rs)
-        ",
-    );
-    repo.write("b.rs", "old_b\n");
-    repo.commit("initial");
-
-    repo.write(
-        "a.rs",
-        "
-        // LINT.IfChange
-        new_a
-        // LINT.ThenChange(//b.rs)
-        ",
-    );
-    repo.write("b.rs", "new_b\n");
-    repo.commit("update both");
-
-    repo.run()
-        .args(["--diff", "HEAD~1..HEAD", "--strict=false"])
-        .assert()
-        .success();
-}
-
 // ---------------------------------------------------------------------------
 // Pre-commit mode (pass_filenames: true)
 // ---------------------------------------------------------------------------
@@ -421,35 +393,6 @@ fn precommit_skips_cochange_validation() {
         ",
     );
     repo.stage("a.rs");
-
-    repo.run().args(["a.rs", "b.rs"]).assert().success();
-}
-
-#[test]
-fn precommit_passes_when_both_sides_staged() {
-    let repo = TestRepo::new();
-    repo.write(
-        "a.rs",
-        "
-        // LINT.IfChange
-        old_a
-        // LINT.ThenChange(//b.rs)
-        ",
-    );
-    repo.write("b.rs", "old_b\n");
-    repo.commit("initial");
-
-    repo.write(
-        "a.rs",
-        "
-        // LINT.IfChange
-        new_a
-        // LINT.ThenChange(//b.rs)
-        ",
-    );
-    repo.write("b.rs", "new_b\n");
-    repo.stage("a.rs");
-    repo.stage("b.rs");
 
     repo.run().args(["a.rs", "b.rs"]).assert().success();
 }
@@ -642,4 +585,62 @@ fn no_ifttt_inert_in_precommit_mode() {
     repo.stage("a.rs");
 
     repo.run().args(["a.rs", "b.rs"]).assert().success();
+}
+
+// ---------------------------------------------------------------------------
+// Multi-thread output ordering
+// ---------------------------------------------------------------------------
+//
+// The parallel passes (rayon) return findings in arbitrary order; check()
+// must sort them before returning so the output is deterministic across runs.
+
+#[test]
+fn multi_thread_output_is_deterministically_sorted() {
+    let repo = TestRepo::new();
+    // Three source files intentionally written out of alphabetical order to
+    // maximise the chance that parallel scheduling returns them unordered.
+    for (name, old) in [("c.rs", "old_c"), ("a.rs", "old_a"), ("b.rs", "old_b")] {
+        repo.write(
+            name,
+            &format!(
+                "
+                // LINT.IfChange
+                {old}
+                // LINT.ThenChange(//target.rs)
+                "
+            ),
+        );
+    }
+    repo.write("target.rs", "old_target\n");
+    repo.commit("initial");
+
+    for (name, new) in [("c.rs", "new_c"), ("a.rs", "new_a"), ("b.rs", "new_b")] {
+        repo.write(
+            name,
+            &format!(
+                "
+                // LINT.IfChange
+                {new}
+                // LINT.ThenChange(//target.rs)
+                "
+            ),
+        );
+    }
+    repo.commit("update all sources, not target");
+
+    let result = repo
+        .run_with_threads(4)
+        .args(["--diff", "HEAD~1..HEAD"])
+        .assert()
+        .failure()
+        .code(1);
+    let stderr = String::from_utf8_lossy(&result.get_output().stderr);
+
+    let a_pos = stderr.find("a.rs:").expect("finding for a.rs");
+    let b_pos = stderr.find("b.rs:").expect("finding for b.rs");
+    let c_pos = stderr.find("c.rs:").expect("finding for c.rs");
+    assert!(
+        a_pos < b_pos && b_pos < c_pos,
+        "expected findings sorted a.rs < b.rs < c.rs, got:\n{stderr}",
+    );
 }

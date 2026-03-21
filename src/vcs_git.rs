@@ -9,7 +9,7 @@ mod udiff;
 
 pub struct GitVcsProvider {
     root: PathBuf,
-    /// Explicit git ref range (e.g. `main...HEAD`). None = staged changes.
+    /// Git ref range (e.g. `main...HEAD`). None when only structural validation is requested.
     diff_range: Option<String>,
     /// When false, accept bare and single-`/` paths in ThenChange targets.
     strict: bool,
@@ -61,17 +61,18 @@ impl GitVcsProvider {
 
 impl VcsProvider for GitVcsProvider {
     fn diff(&self) -> Result<ChangeMap> {
-        let raw = match &self.diff_range {
-            Some(range) => git_diff(&self.root, range)?,
-            None => staged_diff(&self.root)?,
-        };
+        let range = self
+            .diff_range
+            .as_deref()
+            .expect("diff() called without a ref range");
+        let raw = git_diff(&self.root, range)?;
         udiff::parse(&mut std::io::Cursor::new(raw), strip_git_prefix).map_err(anyhow::Error::msg)
     }
 
     fn suppressions(&self) -> Result<Option<String>> {
         let log_range = match &self.diff_range {
             Some(range) => three_dot_to_log_range(range),
-            // Staged diff has no commit range to scan for suppressions.
+            // Structural-only mode has no commit range to scan for suppressions.
             None => return Ok(None),
         };
         Ok(parse_no_ifttt_from_commits(&self.root, &log_range))
@@ -163,21 +164,6 @@ fn strip_git_prefix(path: &str) -> String {
         .or_else(|| path.strip_prefix("b/"))
         .unwrap_or(path)
         .to_string()
-}
-
-fn staged_diff(root: &Path) -> Result<String> {
-    let output = std::process::Command::new("git")
-        .args(["diff", "--cached"])
-        .current_dir(root)
-        .output()
-        .context("failed to run git diff --cached")?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("git diff --cached failed: {stderr}");
-    }
-
-    String::from_utf8(output.stdout).context("git diff --cached output is not UTF-8")
 }
 
 fn git_diff(root: &Path, range: &str) -> Result<String> {
