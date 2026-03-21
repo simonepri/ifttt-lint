@@ -57,7 +57,25 @@ pub fn check(
     ignore_patterns: &[globset::GlobMatcher],
 ) -> CheckResult {
     let mut result = CheckResult::default();
-    let validate_files = vcs.validate_files();
+    let vcs_validate_files = vcs.validate_files();
+
+    // When no file list was provided but a diff is present, auto-populate
+    // the structural validation set from changed (non-deleted) files.
+    let derived_validate_files: Option<Vec<String>> =
+        if vcs_validate_files.is_empty() && !changes.is_empty() {
+            Some(
+                changes
+                    .iter()
+                    .filter(|(_, fc)| !fc.deleted)
+                    .map(|(path, _)| path.clone())
+                    .collect(),
+            )
+        } else {
+            None
+        };
+    let validate_files: &[String] = derived_validate_files
+        .as_deref()
+        .unwrap_or(vcs_validate_files);
 
     // Pass 1: parse changed files + validate_files.
     let changed_files: Vec<String> = changes.keys().cloned().collect();
@@ -163,9 +181,14 @@ pub fn check(
             result.parse_errors.extend(r.parse_errors);
         }
 
-        // Diff-based cross-file validation
+        // Diff-based cross-file validation (scoped to file list when present).
+        // Note: when `derived_validate_files` is active, `file_list_set` is
+        // non-empty (all changed non-deleted files), so the filter below takes
+        // the allow-list branch — but its outcome is equivalent to the all-pass
+        // branch since every changed file is already in the set.
         let diff_results: Vec<CheckResult> = changed_files
             .par_iter()
+            .filter(|f| file_list_set.is_empty() || file_list_set.contains(f.as_str()))
             .filter_map(|file_str| {
                 let parsed = cache.get(file_str)?;
                 let sorted = sorted_lines.get(file_str.as_str());
@@ -197,15 +220,20 @@ pub fn check(
         }
     }
 
-    // Pass 3: reverse lookup — find surviving files that reference a deleted target.
+    // Pass 3: reverse lookup — find surviving files that reference a deleted
+    // target or a stale label.
     let deleted_set: HashSet<&str> = changes
         .iter()
         .filter(|(_, fc)| fc.deleted)
         .map(|(path, _)| path.as_str())
         .collect();
-    if !deleted_set.is_empty() {
-        check_deleted_references(
+
+    let label_sets = build_label_sets(changes, &cache, &sorted_lines);
+
+    if !deleted_set.is_empty() || !label_sets.is_empty() {
+        check_stale_references(
             &deleted_set,
+            &label_sets,
             &sorted_lines,
             &mut cache,
             vcs,
@@ -480,20 +508,43 @@ fn is_triggered(pair: &DirectivePair, sorted: Option<&SortedLines>) -> bool {
         return false;
     };
 
-    // Added lines use `>=` because an addition on the IfChange line itself means
-    // the directive block was touched and should trigger validation.
-    if SortedLines::any_in_range(&sorted.added, pair.if_line.get(), pair.then_line.get()) {
+    let content_start = pair.if_line.get() + 1;
+    let content_end = pair.then_line.get() - 1;
+
+    // Brand-new pair: IfChange was added but not removed at its position.
+    // The block is being established for the first time, not modifying prior
+    // state — content lines may appear in `sorted.added` because the whole
+    // block is new, not because they were changed. A label rename is
+    // distinguishable because it both adds and removes the IfChange line.
+    let if_change_added =
+        SortedLines::any_in_range(&sorted.added, pair.if_line.get(), pair.if_line.get());
+    let if_change_removed = SortedLines::any_in_range(
+        &sorted.removed_new_pos,
+        pair.if_line.get(),
+        pair.if_line.get(),
+    );
+    if if_change_added && !if_change_removed {
+        return false;
+    }
+
+    // Content additions between directives (exclusive of directive lines).
+    if SortedLines::any_in_range(&sorted.added, content_start, content_end) {
         return true;
     }
 
-    // Removed lines use `>` (if_line + 1) because a removal *at* the IfChange
-    // line's position means content was removed before the guarded block (the
-    // directive itself is on that line), so only removals strictly inside count.
-    if SortedLines::any_in_range(
-        &sorted.removed_new_pos,
-        pair.if_line.get() + 1,
-        pair.then_line.get(),
-    ) {
+    // Content removals between directives.
+    // If ThenChange was replaced (then_line ∈ added), cap at content_end —
+    // a removed_new_pos at then_line belongs to the ThenChange replacement,
+    // not a content removal. Otherwise include then_line (content removal
+    // right before ThenChange collapses there).
+    let then_replaced =
+        SortedLines::any_in_range(&sorted.added, pair.then_line.get(), pair.then_line.get());
+    let removal_end = if then_replaced {
+        content_end
+    } else {
+        pair.then_line.get()
+    };
+    if SortedLines::any_in_range(&sorted.removed_new_pos, content_start, removal_end) {
         return true;
     }
 
@@ -881,11 +932,71 @@ fn find_label_range(file_path: &str, label_name: &str, cache: &ParseCache) -> Op
     None
 }
 
-/// Find surviving files whose ThenChange targets reference a deleted file.
-/// Uses a two-stage substring filter (`LINT.` then deleted path) to avoid
-/// parsing the vast majority of files.
-fn check_deleted_references(
+/// Build the set of current IfChange labels for each changed file that may
+/// have had labels added, renamed, or removed. Uses owned strings to avoid
+/// borrowing cache across the mutable pass.
+///
+/// Includes a file when:
+///   - It has no IfChange directives (all labeled pairs may have been removed).
+///   - An IfChange line appears in `sorted.added` (label may be new or renamed).
+///   - Lines were removed and IfChange directives exist (a labeled pair may
+///     have been partially removed — we can't see deleted directives).
+///
+/// Skips files where IfChange directives exist, no IfChange was added, and
+/// nothing was removed — labels are intact, no stale references introduced.
+fn build_label_sets(
+    changes: &ChangeMap,
+    cache: &ParseCache,
+    sorted_lines: &HashMap<&str, SortedLines>,
+) -> HashMap<String, HashSet<String>> {
+    changes
+        .iter()
+        .filter(|(_, fc)| !fc.deleted)
+        .filter_map(|(path, _)| {
+            let parsed = cache.get(path)?;
+            let has_if_change = parsed
+                .directives
+                .iter()
+                .any(|d| matches!(d, Directive::IfChange { .. }));
+            if has_if_change {
+                // sorted_lines is keyed by all non-deleted changed files that
+                // are in cache — same preconditions as reaching here. The `?`
+                // is a defensive fallback; it should never return None.
+                let sorted = sorted_lines.get(path.as_str())?;
+                let any_if_added = parsed.directives.iter().any(|d| {
+                    if let Directive::IfChange { line, .. } = d {
+                        SortedLines::any_in_range(&sorted.added, line.get(), line.get())
+                    } else {
+                        false
+                    }
+                });
+                // Skip only when no IfChange was added AND nothing was removed.
+                // If lines were removed, a labeled pair may have been deleted —
+                // we cannot see it in the parsed output, so include the file.
+                if !any_if_added && sorted.removed_new_pos.is_empty() {
+                    return None;
+                }
+            }
+            let labels: HashSet<String> = parsed
+                .directives
+                .iter()
+                .filter_map(|d| match d {
+                    Directive::IfChange { label: Some(l), .. } => Some(l.clone()),
+                    _ => None,
+                })
+                .collect();
+            Some((path.clone(), labels))
+        })
+        .collect()
+}
+
+/// Find surviving files whose ThenChange targets reference a deleted file
+/// or a stale label. Uses a two-stage substring filter (`LINT.` then
+/// deleted/label-tracked path) to avoid parsing the vast majority of files.
+#[allow(clippy::too_many_arguments)]
+fn check_stale_references(
     deleted: &HashSet<&str>,
+    label_sets: &HashMap<String, HashSet<String>>,
     sorted_lines: &HashMap<&str, SortedLines>,
     cache: &mut ParseCache,
     vcs: &dyn VcsProvider,
@@ -901,8 +1012,40 @@ fn check_deleted_references(
         }
     };
 
-    type ScanEntry = (Vec<Finding>, Option<(String, ParsedFile)>);
-    let results: Vec<ScanEntry> = candidates
+    let scan_results = scan_stale_references(
+        &candidates,
+        deleted,
+        label_sets,
+        sorted_lines,
+        cache,
+        vcs,
+        ignore_patterns,
+        file_list_set,
+    );
+
+    for (findings, new_entry) in scan_results {
+        result.findings.extend(findings);
+        if let Some((path, parsed)) = new_entry {
+            cache.insert(path, parsed);
+        }
+    }
+}
+
+type ScanEntry = (Vec<Finding>, Option<(String, ParsedFile)>);
+
+/// Parallel scan phase — reads from cache but never mutates it.
+#[allow(clippy::too_many_arguments)]
+fn scan_stale_references(
+    candidates: &[String],
+    deleted: &HashSet<&str>,
+    label_sets: &HashMap<String, HashSet<String>>,
+    sorted_lines: &HashMap<&str, SortedLines>,
+    cache: &ParseCache,
+    vcs: &dyn VcsProvider,
+    ignore_patterns: &[globset::GlobMatcher],
+    file_list_set: &HashSet<&str>,
+) -> Vec<ScanEntry> {
+    candidates
         .par_iter()
         .filter_map(|rel_str| {
             if deleted.contains(rel_str.as_str()) {
@@ -928,7 +1071,11 @@ fn check_deleted_references(
                     return None;
                 }
 
-                if !deleted.iter().any(|d| content.contains(*d)) {
+                // Quick content filter: skip files that don't mention any
+                // deleted path or any file with tracked labels.
+                let mentions_deleted = deleted.iter().any(|d| content.contains(*d));
+                let mentions_label_file = label_sets.keys().any(|f| content.contains(f.as_str()));
+                if !mentions_deleted && !mentions_label_file {
                     return None;
                 }
 
@@ -952,35 +1099,46 @@ fn check_deleted_references(
                         continue;
                     };
                     let target_str = resolve_relative_to_source(resolved, file, rel_str);
-                    if !deleted.contains(target_str.as_str()) {
+
+                    // Deleted file reference.
+                    if deleted.contains(target_str.as_str()) {
+                        let message = match &target.label {
+                            Some(label) => {
+                                format!("target file not found: {target_str} (label {label})")
+                            }
+                            None => format!("target file not found: {target_str}"),
+                        };
+                        findings.push(mk_finding(
+                            &FindingCtx {
+                                source_file: rel_str,
+                                pair,
+                                target,
+                            },
+                            message,
+                        ));
                         continue;
                     }
-                    let message = match &target.label {
-                        Some(label) => {
-                            format!("target file not found: {target_str} (label {label})")
+
+                    // Stale label reference.
+                    if let Some(label_name) = &target.label {
+                        if let Some(valid_labels) = label_sets.get(&target_str) {
+                            if !valid_labels.contains(label_name) {
+                                findings.push(mk_finding(
+                                    &FindingCtx {
+                                        source_file: rel_str,
+                                        pair,
+                                        target,
+                                    },
+                                    format!("label {label_name} not found in {target_str}"),
+                                ));
+                            }
                         }
-                        None => format!("target file not found: {target_str}"),
-                    };
-                    findings.push(mk_finding(
-                        &FindingCtx {
-                            source_file: rel_str,
-                            pair,
-                            target,
-                        },
-                        message,
-                    ));
+                    }
                 }
             }
             Some((findings, new_entry))
         })
-        .collect();
-
-    for (findings, new_entry) in results {
-        result.findings.extend(findings);
-        if let Some((path, parsed)) = new_entry {
-            cache.insert(path, parsed);
-        }
-    }
+        .collect()
 }
 
 #[cfg(test)]

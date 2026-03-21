@@ -1,4 +1,4 @@
-name: "ifttt-lint"
+name: "IfThisThenThat"
 description: "Enforce atomic cross-file changes via LINT.IfChange/ThenChange directives"
 author: "simonepri"
 branding:
@@ -35,11 +35,21 @@ runs:
       env:
         EVENT: ${{ github.event_name }}
         BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        HEAD_SHA: ${{ github.sha }}
+        HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        EXTRA_ARGS: ${{ inputs.args }}
       run: |
-        DIFF_ARGS=""
+        set -f  # Disable shell globbing — let ifttt-lint resolve globs internally.
         if [ "$EVENT" = "pull_request" ] && [ -n "$BASE_SHA" ]; then
+          # PR: diff check — validates co-changes across all commits in the PR.
+          # Mirrors the ifttt-lint-diff hook. Supports NO_IFTTT suppression.
+          # Use the PR branch HEAD (not github.sha which is the merge commit) so
+          # git log can scan commit messages for NO_IFTTT suppression tags.
           git fetch origin "$BASE_SHA" --depth=1 2>/dev/null || true
-          DIFF_ARGS="--diff ${BASE_SHA}..${HEAD_SHA}"
+          git fetch origin "$HEAD_SHA" --depth=50 2>/dev/null || true
+          ifttt-lint --diff "${BASE_SHA}..${HEAD_SHA}" $EXTRA_ARGS
+        elif [ "$EVENT" = "push" ]; then
+          # Push: structural check on all tracked files — validates targets and labels.
+          # Mirrors the ifttt-lint hook. Control which branches trigger this via
+          # on.push.branches in your workflow (e.g. [main]).
+          ifttt-lint '*' $EXTRA_ARGS
         fi
-        ifttt-lint $DIFF_ARGS ${{ inputs.args }}

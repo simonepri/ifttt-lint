@@ -62,13 +62,21 @@ fn main() {
         }
     };
 
+    // In structural mode (files provided, no explicit --diff), skip the staged
+    // diff entirely — co-change checking belongs to the push hook, not pre-commit.
+    let structural_only = !cli.files.is_empty() && cli.diff.is_none();
+
     let vcs = vcs_git::GitVcsProvider::new(root, cli.diff, cli.strict, cli.files);
 
-    let changes = match vcs.diff() {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("error: {e}");
-            process::exit(2);
+    let changes = if structural_only {
+        ifttt_lint::vcs::ChangeMap::default()
+    } else {
+        match vcs.diff() {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("error: {e}");
+                process::exit(2);
+            }
         }
     };
 

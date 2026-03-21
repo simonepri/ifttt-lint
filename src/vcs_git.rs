@@ -23,6 +23,7 @@ impl GitVcsProvider {
         strict: bool,
         files: Vec<PathBuf>,
     ) -> Self {
+        let files = expand_file_globs(&root, files);
         let normalized = files
             .iter()
             .filter_map(|p| {
@@ -241,6 +242,76 @@ fn three_dot_to_log_range(range: &str) -> String {
         Some((base, head)) => format!("{base}..{head}"),
         None => range.to_string(),
     }
+}
+
+fn is_glob_pattern(s: &str) -> bool {
+    s.contains('*') || s.contains('?') || s.contains('[')
+}
+
+/// Expands file arguments that contain glob characters (`*`, `?`, `[`) against
+/// `git ls-files`. Non-glob arguments pass through unchanged. This avoids
+/// shell command-line length limits when validating the entire repo: the caller
+/// can pass `'*'` (quoted to prevent shell expansion) and let the tool
+/// enumerate tracked files internally.
+fn expand_file_globs(root: &Path, files: Vec<PathBuf>) -> Vec<PathBuf> {
+    if !files.iter().any(|p| is_glob_pattern(&p.to_string_lossy())) {
+        return files;
+    }
+
+    let tracked = match list_tracked_files(root) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("warning: failed to list tracked files for glob expansion: {e}");
+            return files;
+        }
+    };
+
+    let mut result = Vec::new();
+    for file in &files {
+        let s = file.to_string_lossy();
+        if !is_glob_pattern(&s) {
+            result.push(file.clone());
+            continue;
+        }
+        match globset::GlobBuilder::new(&s)
+            .literal_separator(false)
+            .build()
+        {
+            Ok(glob) => {
+                let matcher = glob.compile_matcher();
+                for tracked_file in &tracked {
+                    if matcher.is_match(tracked_file) {
+                        result.push(PathBuf::from(tracked_file));
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("warning: invalid glob pattern '{s}': {e}");
+                result.push(file.clone());
+            }
+        }
+    }
+    result
+}
+
+fn list_tracked_files(root: &Path) -> Result<Vec<String>> {
+    let output = std::process::Command::new("git")
+        .args(["ls-files", "-z"])
+        .current_dir(root)
+        .output()
+        .context("git ls-files")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("git ls-files failed: {stderr}");
+    }
+
+    Ok(output
+        .stdout
+        .split(|&b| b == 0)
+        .filter(|s| !s.is_empty())
+        .map(|s| String::from_utf8_lossy(s).replace('\\', "/"))
+        .collect())
 }
 
 #[cfg(test)]
