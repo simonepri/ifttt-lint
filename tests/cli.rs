@@ -644,3 +644,32 @@ fn multi_thread_output_is_deterministically_sorted() {
         "expected findings sorted a.rs < b.rs < c.rs, got:\n{stderr}",
     );
 }
+
+// ---------------------------------------------------------------------------
+// Symlink handling
+// ---------------------------------------------------------------------------
+
+#[test]
+fn symlink_files_are_skipped_in_structural_validation() {
+    let repo = TestRepo::new();
+    repo.write("real.rs", "content\n");
+    // Create a file symlink tracked by git.
+    std::os::unix::fs::symlink("real.rs", repo.dir.path().join("link.rs")).unwrap();
+    repo.commit("initial");
+
+    // Structural validation on the symlink should not report errors.
+    repo.run().args(["link.rs"]).assert().success();
+}
+
+#[test]
+fn symlink_to_directory_is_skipped_in_glob_expansion() {
+    let repo = TestRepo::new();
+    std::fs::create_dir_all(repo.dir.path().join("subdir")).unwrap();
+    repo.write("subdir/a.rs", "content\n");
+    // Create a directory symlink tracked by git.
+    std::os::unix::fs::symlink("subdir", repo.dir.path().join("link")).unwrap();
+    repo.commit("initial");
+
+    // '*' glob expansion should skip the directory symlink without errors.
+    repo.run().args(["*"]).assert().success();
+}

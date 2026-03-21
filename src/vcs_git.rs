@@ -24,6 +24,19 @@ impl GitVcsProvider {
         files: Vec<PathBuf>,
     ) -> Self {
         let files = expand_file_globs(&root, files);
+        // Skip symlinks — git tracks them as blob entries containing the
+        // target path; validating through a link is not meaningful.
+        let files: Vec<PathBuf> = files
+            .into_iter()
+            .filter(|p| {
+                let abs = if p.is_absolute() {
+                    p.clone()
+                } else {
+                    root.join(p)
+                };
+                !abs.symlink_metadata().is_ok_and(|m| m.is_symlink())
+            })
+            .collect();
         let normalized = files
             .iter()
             .filter_map(|p| {
@@ -82,6 +95,11 @@ impl VcsProvider for GitVcsProvider {
     fn read_file(&self, rel_path: &str) -> Result<Option<String>> {
         use std::io::Read;
         let abs = self.root.join(rel_path);
+        // Skip symlinks — git tracks them as blob entries containing the target
+        // path, but validating through the link is not meaningful.
+        if abs.symlink_metadata().is_ok_and(|m| m.is_symlink()) {
+            return Ok(None);
+        }
         let mut file = match std::fs::File::open(&abs) {
             Ok(f) => f,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
