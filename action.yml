@@ -6,10 +6,6 @@ branding:
   color: orange
 
 inputs:
-  version:
-    description: "Version of ifttt-lint to install (e.g. '0.5.0'). Default: matches the action revision."
-    required: false
-    default: ""
   args:
     description: "Extra arguments to pass to ifttt-lint (e.g. '--format json --strict=false')."
     required: false
@@ -22,14 +18,7 @@ runs:
 
     - name: Install ifttt-lint
       shell: bash
-      run: |
-        VERSION="${{ inputs.version }}"
-        if [ -z "$VERSION" ]; then
-          # Read the version from the action's own Cargo.toml so the installed
-          # binary always matches the action revision being used.
-          VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' "$GITHUB_ACTION_PATH/Cargo.toml" | head -1)
-        fi
-        cargo install "ifttt-lint@${VERSION}"
+      run: cargo install --path "$GITHUB_ACTION_PATH"
 
     - name: Run ifttt-lint
       shell: bash
