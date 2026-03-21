@@ -202,7 +202,7 @@ The default thread count is **2** (`--threads 0`), which gives near-optimal thro
 
 ```yaml
 - repo: https://github.com/simonepri/ifttt-lint
-  rev: v0.5.3
+  rev: v0.6.0
   hooks:
     - id: ifttt-lint
     - id: ifttt-lint-diff
@@ -231,7 +231,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: simonepri/ifttt-lint@v0.5.3
+      - uses: simonepri/ifttt-lint@v0.6.0
 ```
 
 <!-- LINT.ThenChange(//Cargo.toml:version, //.github/workflows/ci-cd.yml:version) -->
