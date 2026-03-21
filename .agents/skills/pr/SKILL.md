@@ -13,9 +13,10 @@ allowed-tools: Bash, Read, Glob, Grep, AskUserQuestion, Agent
 5. **Create PR**:
    - **Gather context**: read the commit messages (`git log <base>..HEAD`). Run `/diff <branch>` for the full diff.
    - **Write description**: PRs are hierarchical — they aggregate commits.
-     - **Single commit**: the PR description is the commit message body. Don't rewrite it.
+     - **Single commit**: the PR description is the commit message body, reformatted with markdown headings.
      - **Multiple commits**: ask the user whether to (a) include all commits as-is, (b) squash first then PR, or (c) PR only a subset. Then aggregate the included commit messages. Add Goal/Background/Alternatives only when they provide context the individual commits don't.
+     - Use the same body format as `/commit` (Problem + Solution with `##` headings). No "Test plan" or "Summary" sections.
      - Follow the project's PR conventions if documented (e.g., CONTRIBUTING.md).
    - **Title**: conventional commit style, under 70 characters.
-   - Write the description to a temporary file (e.g., `/tmp/pr-body.md`) and run `gh pr create --base <base> --title "<title>" -F /tmp/pr-body.md`.
-6. **Update PR**: run `/diff <branch>` and compare the full diff against the current PR description. If the description no longer accurately reflects the branch's changes, update it by writing the new description to a temporary file and running `gh pr edit <number> --title "<title>" -F /tmp/pr-body.md`.
+   - Create a unique temp file with `mktemp /tmp/pr-body.XXXXXX.md`, write the description to it, and run `gh pr create --base <base> --title "<title>" -F <temp-file>`.
+6. **Update PR**: run `/diff <branch>` and compare the full diff against the current PR description. If the description no longer accurately reflects the branch's changes, create a unique temp file with `mktemp /tmp/pr-body.XXXXXX.md`, write the new description to it, and run `gh pr edit <number> --title "<title>" -F <temp-file>`.

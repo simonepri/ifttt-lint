@@ -12,6 +12,25 @@ allowed-tools: Bash, Read, Glob, Grep, AskUserQuestion, Agent
    - Format: `type(scope): subject` — types: `feat`, `fix`, `refactor`, `chore`, `docs`, `test`, `ci`, `perf`
    - Breaking changes: append `!` (e.g., `fix!: remove deprecated endpoint`)
    - Subject: under 72 chars, imperative mood. Must reference _what_ changed specifically — generic subjects like "initial commit", "fix bug", "update code" are never acceptable.
-   - Body: use the reasoning framework (Problem/Solution) always
+   - Body: always use the reasoning framework with `##` markdown headings. Required: Problem + Solution. Optional (include only when they add non-obvious context): Goal, Background, Alternatives.
+
+     ```
+     ## Problem
+     <what was wrong or missing>
+
+     ## Goal (optional)
+     <what this change aims to achieve, if not obvious>
+
+     ## Background (optional)
+     <context needed to understand why, if non-obvious>
+
+     ## Solution
+     <what was done and why this approach>
+
+     ## Alternatives considered (optional)
+     <what else was evaluated and why not>
+     ```
+
    - One logical change per commit. If you need "and" in the subject, split it.
-4. **Commit**: write the message to a temporary file (e.g., `/tmp/commit-msg.txt`) and run `git commit -F <temp-file>` — do not add Co-Authored-By or other trailers.
+
+4. **Commit**: create a unique temp file with `mktemp /tmp/commit-msg.XXXXXX.txt`, write the message to it, and run `git commit -F <temp-file>` — do not add Co-Authored-By or other trailers.

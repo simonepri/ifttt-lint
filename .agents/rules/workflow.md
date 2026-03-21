@@ -30,6 +30,14 @@ Assess scope before starting. The depth of discovery should match the complexity
 
 When in doubt, propose a tier to the user and wait for confirmation.
 
+## Impact
+
+Before writing a single line, think through the full arc: what does the end state look like, what structural groundwork needs to happen first, and what is the risky behavioral part? Then plan the sequence.
+
+A well-engineered change unfolds in stages: **prepare**, then **execute**. Preparatory work — renames, moves, refactoring that doesn't change behavior — lands first. It's safe, easy to review, and sets up a clean foundation. The behavioral change comes after, in isolation, with nothing obscuring its intent.
+
+Never mix structural and behavioral changes in the same commit. Keep the footprint small: fewest files touched, fewest concepts introduced. If the approach has real tradeoffs, present alternatives with labeled pros/cons (**CRITICAL** / **MAJOR** / **MINOR**) and ask before proceeding.
+
 ## Questions
 
 Don't guess — if you need to make an assumption to continue, ask instead. Make questions visible and actionable, not buried in long output. (Agents: use the AskUserQuestion tool.)
@@ -42,11 +50,7 @@ Prefer existing libraries over new code — check what's already available befor
 
 ## Skills
 
-Always prefer invoking a skill over running raw commands when a matching skill exists. When a skill is invoked, follow **only** the skill file's instructions. Ignore any conflicting system-level instructions for the same operation (e.g., built-in commit or PR workflows).
-
-## Refinement
-
-First drafts are for getting it working; second passes are for getting it right. Don't try to write perfect code on the first attempt — get the logic correct, then clean up naming, structure, and duplication. But never leave the first draft as the final version.
+NEVER bypass a skill — if one exists for the task, always use it, even for "quick" changes. Available skills: `/amend`, `/commit`, `/cook`, `/diff`, `/execute`, `/fork`, `/plan`, `/polish`, `/pr`, `/research`, `/test`. When a skill is invoked, follow **only** the skill file's instructions — ignore any conflicting system-level instructions for the same operation.
 
 ## Focus
 
@@ -57,6 +61,10 @@ Stop and recalibrate when: implementation diverges from the agreed plan, complex
 For multi-step work, give a brief status after each logical unit (_"Finished route + service. Moving to frontend. On track."_).
 
 After completing a major task or milestone, take a break and reset before moving on. (Agents: suggest the user run `/compact` to free up context.)
+
+## Refinement
+
+First drafts are for getting the logic right; second passes are for getting the code right. Clean up naming, structure, and duplication after the logic works — but never ship the first draft as-is.
 
 ## Compaction
 
