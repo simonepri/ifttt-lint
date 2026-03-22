@@ -236,7 +236,7 @@ fn run_validation(
                     TargetResolution::SameFileWarning(d)
                     | TargetResolution::Missing(d)
                     | TargetResolution::Error(d) => file_result.push(d),
-                    TargetResolution::PriorError => {}
+                    TargetResolution::NoTarget | TargetResolution::PriorError => {}
                 }
             }
             (!file_result.is_empty()).then_some(file_result)
@@ -642,7 +642,7 @@ struct DiagnosticCtx<'a> {
     target: &'a Target,
 }
 
-fn target_warning(ctx: &DiagnosticCtx<'_>, message: String) -> Diagnostic {
+fn target_diagnostic(ctx: &DiagnosticCtx<'_>, severity: Severity, message: String) -> Diagnostic {
     let DiagnosticCtx {
         source_file,
         pair,
@@ -651,7 +651,7 @@ fn target_warning(ctx: &DiagnosticCtx<'_>, message: String) -> Diagnostic {
     Diagnostic {
         file: source_file.to_string(),
         line: pair.if_line,
-        severity: Severity::Warning,
+        severity,
         message,
         target: Some(TargetInfo {
             label: pair.if_label.clone(),
@@ -659,6 +659,14 @@ fn target_warning(ctx: &DiagnosticCtx<'_>, message: String) -> Diagnostic {
             then_change_line: pair.then_line,
         }),
     }
+}
+
+fn target_warning(ctx: &DiagnosticCtx<'_>, message: String) -> Diagnostic {
+    target_diagnostic(ctx, Severity::Warning, message)
+}
+
+fn target_error(ctx: &DiagnosticCtx<'_>, message: String) -> Diagnostic {
+    target_diagnostic(ctx, Severity::Error, message)
 }
 
 fn mk_error(file: &str, line: NonZeroUsize, message: String) -> Diagnostic {
@@ -702,10 +710,16 @@ fn missing_target_message(target_str: &str, label: Option<&str>) -> String {
 
 /// Pure resolution result — no side effects, caller dispatches.
 enum TargetResolution {
-    Resolved { path: String, label: Option<String> },
+    Resolved {
+        path: String,
+        label: Option<String>,
+    },
     SameFileWarning(Diagnostic),
     Missing(Diagnostic),
     Error(Diagnostic),
+    /// Nothing to validate — bare target without file or label.
+    NoTarget,
+    /// A VCS error was already recorded for this path; skip silently.
     PriorError,
 }
 
@@ -727,7 +741,7 @@ fn resolve_target(
             (path, label.clone())
         }
         (None, Some(label)) => (source_file.to_string(), Some(label.clone())),
-        (None, None) => return TargetResolution::PriorError,
+        (None, None) => return TargetResolution::NoTarget,
     };
 
     let fctx = DiagnosticCtx {
@@ -767,7 +781,7 @@ fn resolve_target(
                     path: target_str,
                     label: target_label,
                 },
-                ExistsStatus::Missing => TargetResolution::Missing(target_warning(
+                ExistsStatus::Missing => TargetResolution::Missing(target_error(
                     &fctx,
                     missing_target_message(&target_str, target.label.as_deref()),
                 )),
@@ -793,7 +807,7 @@ fn resolve_target(
                     label: target_label,
                 }
             } else {
-                TargetResolution::Missing(target_warning(
+                TargetResolution::Missing(target_error(
                     &fctx,
                     missing_target_message(&target_str, target.label.as_deref()),
                 ))
@@ -824,7 +838,7 @@ fn check_label_exists(
     if find_label_range(path, label_name, cache).is_some() {
         return None;
     }
-    Some(target_warning(
+    Some(target_error(
         fctx,
         format!("label {label_name} not found in {path}"),
     ))
@@ -862,7 +876,7 @@ fn check_target_synced(
     }
 
     let Some(range) = find_label_range(target_str, label_name, ctx.cache) else {
-        return Some(target_warning(
+        return Some(target_error(
             fctx,
             format!("label {label_name} not found in {target_str}"),
         ));
@@ -1060,7 +1074,7 @@ fn scan_stale_references(
 
                 // Deleted file reference.
                 if ctx.deleted.contains(target_str.as_str()) {
-                    diagnostics.push(target_warning(
+                    diagnostics.push(target_error(
                         &dctx,
                         missing_target_message(&target_str, target.label.as_deref()),
                     ));
@@ -1078,7 +1092,7 @@ fn scan_stale_references(
                     continue;
                 }
 
-                diagnostics.push(target_warning(
+                diagnostics.push(target_error(
                     &dctx,
                     format!("label {label_name} not found in {target_str}"),
                 ));

@@ -549,4 +549,4 @@ Yes, please contribute! Adding a new language is just a new entry in the [commen
 
 ### Are there other implementations?
 
-[if-changed](https://github.com/mathematic-inc/if-changed), [ifttt-lint](https://github.com/ebrevdo/ifttt-lint), and [ifchange](https://github.com/slnc/ifchange) exist but use different syntax and aren't validated on large-scale repos. For background on the pattern, see [IfChange/ThenChange](https://filiph.net/text/ifchange-thenchange.html), [Syncing Code](https://steve.dignam.xyz/2025/05/28/syncing-code/), and [Fuchsia presubmit checks](https://fuchsia.dev/fuchsia-src/development/source_code/presubmit_checks).
+[if-changed](https://github.com/mathematic-inc/if-changed), [ifttt-lint](https://github.com/ebrevdo/ifttt-lint), and [ifchange](https://github.com/slnc/ifchange) exist but use different syntax and/or aren't validated on large-scale repos. For background on the pattern, see [IfChange/ThenChange](https://filiph.net/text/ifchange-thenchange.html), [Syncing Code](https://steve.dignam.xyz/2025/05/28/syncing-code/), and [Fuchsia presubmit checks](https://fuchsia.dev/fuchsia-src/development/source_code/presubmit_checks).

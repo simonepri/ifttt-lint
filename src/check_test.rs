@@ -1300,7 +1300,8 @@ fn parse_errors(case: CheckCase) {
             ",
         },
         changes: Some(const { &[sub("src/api.rs", &[2])] }),
-        expected_findings: Some(&["target file not found"]),
+        expected_findings: Some(&[]),
+        expected_errors: Some(&["target file not found"]),
         ..DEFAULTS
     } },
     changes_outside_guarded_range_ignored = { CheckCase {
@@ -1445,7 +1446,8 @@ fn change_detection(case: CheckCase) {
             "src/b.rs" => "fn b() {}\n",
         },
         changes: Some(const { &[sub("src/a.rs", &[2]), sub("src/b.rs", &[1])] }),
-        expected_findings: Some(&["not found"]),
+        expected_findings: Some(&[]),
+        expected_errors: Some(&["not found"]),
         ..DEFAULTS
     } },
     same_file_label_both_modified = { CheckCase {
@@ -1550,7 +1552,8 @@ fn label_scoped_detection(case: CheckCase) {
         },
         changes: Some(&[]),
         deleted: &["src/b.rs"],
-        expected_findings: Some(&["target file not found: src/b.rs"]),
+        expected_findings: Some(&[]),
+        expected_errors: Some(&["target file not found: src/b.rs"]),
         ..DEFAULTS
     } },
     deleted_target_with_label = { CheckCase {
@@ -1563,7 +1566,8 @@ fn label_scoped_detection(case: CheckCase) {
         },
         changes: Some(&[]),
         deleted: &["src/b.rs"],
-        expected_findings: Some(&["target file not found: src/b.rs (label section)"]),
+        expected_findings: Some(&[]),
+        expected_errors: Some(&["target file not found: src/b.rs (label section)"]),
         ..DEFAULTS
     } },
     no_deletions_no_findings = { CheckCase {
@@ -1608,7 +1612,8 @@ fn deleted_file_detection(case: CheckCase) {
         },
         changes: Some(&[]),
         file_list: &["a.rs"],
-        expected_findings: Some(&["target file not found: missing.rs"]),
+        expected_findings: Some(&[]),
+        expected_errors: Some(&["target file not found: missing.rs"]),
         ..DEFAULTS
     } },
     target_label_missing = { CheckCase {
@@ -1622,7 +1627,8 @@ fn deleted_file_detection(case: CheckCase) {
         },
         changes: Some(&[]),
         file_list: &["a.rs"],
-        expected_findings: Some(&["label nonexistent not found in b.rs"]),
+        expected_findings: Some(&[]),
+        expected_errors: Some(&["label nonexistent not found in b.rs"]),
         ..DEFAULTS
     } },
     valid_target = { CheckCase {
@@ -1693,7 +1699,8 @@ fn deleted_file_detection(case: CheckCase) {
         },
         changes: Some(&[]),
         file_list: &["a.rs"],
-        expected_findings: Some(&["label nonexistent not found in a.rs"]),
+        expected_findings: Some(&[]),
+        expected_errors: Some(&["label nonexistent not found in a.rs"]),
         ..DEFAULTS
     } },
     structural_and_diff_distinct = { CheckCase {
@@ -1715,8 +1722,8 @@ fn deleted_file_detection(case: CheckCase) {
         // finding from a.rs is expected.
         changes: Some(const { &[sub("b.rs", &[2])] }),
         file_list: &["a.rs"],
-        expected_findings: Some(&["source:a.rs"]),
-        expected_finding_count: Some(1),
+        expected_findings: Some(&[]),
+        expected_errors: Some(&["target file not found: missing_structural.rs"]),
         ..DEFAULTS
     } },
     structural_and_diff_same_file = { CheckCase {
@@ -1729,8 +1736,8 @@ fn deleted_file_detection(case: CheckCase) {
         },
         changes: Some(const { &[sub("a.rs", &[2])] }),
         file_list: &["a.rs"],
-        expected_findings: Some(&["missing.rs"]),
-        expected_finding_count: Some(1),
+        expected_findings: Some(&[]),
+        expected_errors: Some(&["target file not found: missing.rs"]),
         ..DEFAULTS
     } },
     reverse_lookup_scoped_to_non_file_list = { CheckCase {
@@ -1749,8 +1756,8 @@ fn deleted_file_detection(case: CheckCase) {
         changes: Some(&[]),
         deleted: &["b.rs"],
         file_list: &["a.rs"],
-        expected_findings: Some(&["source:a.rs", "source:c.rs"]),
-        expected_finding_count: Some(2),
+        expected_findings: Some(&[]),
+        expected_errors: Some(&["target file not found: b.rs"]),
         ..DEFAULTS
     } },
     deleted_target_no_duplicate_with_file_list = { CheckCase {
@@ -1764,8 +1771,8 @@ fn deleted_file_detection(case: CheckCase) {
         changes: Some(&[]),
         deleted: &["src/b.rs"],
         file_list: &["src/a.rs"],
-        expected_findings: Some(&["target file not found: src/b.rs"]),
-        expected_finding_count: Some(1),
+        expected_findings: Some(&[]),
+        expected_errors: Some(&["target file not found: src/b.rs"]),
         ..DEFAULTS
     } },
 )]
@@ -2204,8 +2211,8 @@ fn content_changes_trigger(case: CheckCase) {
         deleted: &["deleted.rs"],
         // ref.rs is NOT in file list, but reverse lookup fires globally.
         file_list: &["other.rs"],
-        expected_findings: Some(&["target file not found: deleted.rs"]),
-        expected_finding_count: Some(1),
+        expected_findings: Some(&[]),
+        expected_errors: Some(&["target file not found: deleted.rs"]),
         ..DEFAULTS
     } },
 )]
@@ -2228,8 +2235,8 @@ fn file_list_scoping(case: CheckCase) {
         // a.rs in changes (but no line-level changes). No explicit file_list.
         changes: Some(&[("a.rs", &[], &[])]),
         file_list: &[],
-        expected_findings: Some(&["target file not found: missing.rs"]),
-        expected_finding_count: Some(1),
+        expected_findings: Some(&[]),
+        expected_errors: Some(&["target file not found: missing.rs"]),
         ..DEFAULTS
     } },
     // Non-triggered pair with labeled target to an existing unchanged file.
@@ -2282,8 +2289,8 @@ fn auto_populate_validation(case: CheckCase) {
         // a.rs is in the diff (was modified to remove label).
         changes: Some(&[("a.rs", &[], &[])]),
         file_list: &[],
-        expected_findings: Some(&["label old_label not found in a.rs"]),
-        expected_finding_count: Some(1),
+        expected_findings: Some(&[]),
+        expected_errors: Some(&["label old_label not found in a.rs"]),
         ..DEFAULTS
     } },
     renamed_label = { CheckCase {
@@ -2305,8 +2312,8 @@ fn auto_populate_validation(case: CheckCase) {
         // IfChange line substituted (rename).
         changes: Some(const { &[sub("a.rs", &[1])] }),
         file_list: &[],
-        expected_findings: Some(&["label old_name not found in a.rs"]),
-        expected_finding_count: Some(1),
+        expected_findings: Some(&[]),
+        expected_errors: Some(&["label old_name not found in a.rs"]),
         ..DEFAULTS
     } },
     moved_label = { CheckCase {
@@ -2332,8 +2339,8 @@ fn auto_populate_validation(case: CheckCase) {
         // Both a.rs and b.rs changed.
         changes: Some(&[("a.rs", &[], &[]), ("b.rs", &[1, 2, 3], &[])]),
         file_list: &[],
-        expected_findings: Some(&["label moved_label not found in a.rs"]),
-        expected_finding_count: Some(1),
+        expected_findings: Some(&[]),
+        expected_errors: Some(&["label moved_label not found in a.rs"]),
         ..DEFAULTS
     } },
     valid_label_no_false_positive = { CheckCase {
@@ -2382,8 +2389,8 @@ fn auto_populate_validation(case: CheckCase) {
         // (the pair is not triggered — no sorted changes affect its content).
         changes: Some(const { &[sub("a.rs", &[1]), ("ref.rs", &[], &[])] }),
         file_list: &[],
-        expected_findings: Some(&["label old_name not found in a.rs"]),
-        expected_finding_count: Some(1),
+        expected_findings: Some(&[]),
+        expected_errors: Some(&["label old_name not found in a.rs"]),
         ..DEFAULTS
     } },
     partial_label_removal = { CheckCase {
@@ -2407,8 +2414,8 @@ fn auto_populate_validation(case: CheckCase) {
         // triggering the label_sets guard to include a.rs in the reverse lookup.
         changes: Some(&[("a.rs", &[], &[1])]),
         file_list: &[],
-        expected_findings: Some(&["label foo not found in a.rs"]),
-        expected_finding_count: Some(1),
+        expected_findings: Some(&[]),
+        expected_errors: Some(&["label foo not found in a.rs"]),
         ..DEFAULTS
     } },
 )]
