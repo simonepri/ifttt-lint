@@ -76,7 +76,7 @@ fn format_plain(result: &CheckResult) -> String {
             )
             .unwrap();
         } else {
-            writeln!(out, "{}:{}: {}", d.file, d.line, d.message).unwrap();
+            writeln!(out, "{}: {}", d.location(), d.message).unwrap();
         }
     }
 
