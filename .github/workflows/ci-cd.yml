@@ -103,7 +103,7 @@ jobs:
           # LINT.IfChange(version)
           VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
           # LINT.ThenChange(//Cargo.toml:version, //readme.md:version-pre-commit, //readme.md:version-github-action)
-          sed -i "s/rev: v[0-9][0-9.]*/rev: v${VERSION}/" readme.md
+          sed -i "s|rev: v[0-9][0-9.]*|rev: v${VERSION}|" readme.md
           sed -i "s|ifttt-lint@v[0-9][0-9.]*|ifttt-lint@v${VERSION}|g" readme.md
 
           if ! git diff --quiet readme.md; then
