@@ -6,7 +6,7 @@ use std::sync::Mutex;
 use rayon::prelude::*;
 
 use crate::parser::{Directive, DirectiveError, Target};
-use crate::vcs::{ChangeMap, FileChanges, VcsProvider};
+use crate::vcs::{ChangeMap, FileChanges, FileContent, VcsProvider};
 
 /// Variant order defines sort priority (errors before warnings).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
@@ -324,7 +324,8 @@ fn parse_files(paths: &[String], vcs: &dyn VcsProvider, mut cache: ParseCache) -
 /// Returns `None` when the file does not exist (vs "unreadable" or "empty").
 fn parse_single_file(rel_path: &str, vcs: &dyn VcsProvider) -> Option<ParsedFile> {
     let content = match vcs.read_file(rel_path) {
-        Ok(Some(c)) => c,
+        Ok(Some(FileContent::Text(c))) => c,
+        Ok(Some(FileContent::Binary)) => return Some(ParsedFile::empty()),
         Ok(None) => return None,
         Err(e) => {
             return Some(ParsedFile {
@@ -336,10 +337,6 @@ fn parse_single_file(rel_path: &str, vcs: &dyn VcsProvider) -> Option<ParsedFile
             });
         }
     };
-
-    if crate::vcs::is_binary(&content) {
-        return Some(ParsedFile::empty());
-    }
 
     if !content.contains("LINT.") {
         return Some(ParsedFile::empty());
@@ -1115,10 +1112,9 @@ fn stale_reference_scan_input(
         return Some((build_pairs(&parsed.directives), None));
     }
 
-    let content = ctx.vcs.read_file(rel_str).ok()??;
-    if crate::vcs::is_binary(&content) {
+    let FileContent::Text(content) = ctx.vcs.read_file(rel_str).ok()?? else {
         return None;
-    }
+    };
 
     let mentions_deleted = ctx.deleted.iter().any(|d| content.contains(*d));
     let mentions_label_file = ctx.label_sets.keys().any(|f| content.contains(f.as_str()));

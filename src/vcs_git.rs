@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
-use crate::vcs::{ChangeMap, VcsProvider};
+use crate::vcs::{ChangeMap, FileContent, VcsProvider};
 
 #[path = "udiff.rs"]
 mod udiff;
@@ -69,7 +69,7 @@ impl VcsProvider for GitVcsProvider {
         Ok(parse_no_ifttt_from_commits(&self.root, &log_range))
     }
 
-    fn read_file(&self, rel_path: &str) -> Result<Option<String>> {
+    fn read_file(&self, rel_path: &str) -> Result<Option<FileContent>> {
         use std::io::Read;
         let abs = self.root.join(rel_path);
         if abs.symlink_metadata().is_ok_and(|m| m.is_symlink()) {
@@ -86,14 +86,14 @@ impl VcsProvider for GitVcsProvider {
             .map_err(|e| anyhow::anyhow!(e).context(format!("read {rel_path}")))?;
         let head = &probe[..n];
         if head.contains(&0) || std::str::from_utf8(head).is_err_and(|e| e.error_len().is_some()) {
-            return Ok(Some(String::new()));
+            return Ok(Some(FileContent::Binary));
         }
         let mut buf = Vec::from(head);
         file.read_to_end(&mut buf)
             .map_err(|e| anyhow::anyhow!(e).context(format!("read {rel_path}")))?;
         let text = String::from_utf8(buf)
             .map_err(|e| anyhow::anyhow!(e).context(format!("read {rel_path}")))?;
-        Ok(Some(text))
+        Ok(Some(FileContent::Text(text)))
     }
 
     fn file_exists(&self, rel_path: &str) -> Result<bool> {

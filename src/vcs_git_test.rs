@@ -43,7 +43,8 @@ fn read_file(content: Option<&str>, expected: Option<&str>) {
         std::fs::write(dir.path().join("f.txt"), c).unwrap();
     }
     let vcs = GitVcsProvider::new(dir.path().to_path_buf(), None, true, vec![]);
-    assert_eq!(vcs.read_file("f.txt").unwrap().as_deref(), expected);
+    let result = vcs.read_file("f.txt").unwrap();
+    assert_eq!(result.as_ref().and_then(FileContent::as_text), expected);
 }
 
 #[test]
@@ -211,9 +212,10 @@ fn read_file_utf8_boundary() {
     let vcs = GitVcsProvider::new(dir.path().to_path_buf(), None, true, vec![]);
     // The `read_file` method should NOT treat it as a binary file,
     // and should successfully return the full file content.
+    let result = vcs.read_file("f.txt").unwrap();
     assert_eq!(
-        vcs.read_file("f.txt").unwrap().as_deref(),
-        Some(content.as_str())
+        result.as_ref().and_then(FileContent::as_text),
+        Some(content.as_str()),
     );
 }
 

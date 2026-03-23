@@ -31,6 +31,25 @@ impl FileChanges {
     }
 }
 
+/// Result of reading a file from the VCS provider.
+#[derive(Debug, PartialEq, Eq)]
+pub enum FileContent {
+    /// Valid text content.
+    Text(String),
+    /// File exists but is not valid text (contains NUL bytes or invalid UTF-8).
+    Binary,
+}
+
+impl FileContent {
+    /// Returns the text content by reference, or `None` for binary files.
+    pub fn as_text(&self) -> Option<&str> {
+        match self {
+            Self::Text(s) => Some(s),
+            Self::Binary => None,
+        }
+    }
+}
+
 /// Implement this trait to support a new backend (git, Mercurial, Piper, …).
 pub trait VcsProvider: Send + Sync {
     fn diff(&self) -> Result<ChangeMap>;
@@ -43,7 +62,7 @@ pub trait VcsProvider: Send + Sync {
     /// The git backend reads from the filesystem, so gitignored files are
     /// readable. This is intentional — ThenChange targets must be readable
     /// regardless of tracked status.
-    fn read_file(&self, rel_path: &str) -> Result<Option<String>>;
+    fn read_file(&self, rel_path: &str) -> Result<Option<FileContent>>;
 
     /// The git backend uses raw `Path::exists`, so gitignored files return
     /// true. `search_files` uses `git grep` and skips them. In practice this
@@ -114,8 +133,4 @@ pub(crate) fn lenient_resolve_path(raw: &str) -> Result<String, String> {
         ));
     }
     Ok(rel.replace('\\', "/"))
-}
-
-pub(crate) fn is_binary(content: &str) -> bool {
-    content.as_bytes().iter().take(8192).any(|&b| b == 0)
 }

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use anyhow::Result;
 
-use crate::vcs::{ChangeMap, VcsProvider};
+use crate::vcs::{ChangeMap, FileContent, VcsProvider};
 
 /// In-memory VcsProvider for tests.
 pub struct MockVcsProvider {
@@ -56,8 +56,14 @@ impl VcsProvider for MockVcsProvider {
         Ok(self.suppression.clone())
     }
 
-    fn read_file(&self, rel_path: &str) -> Result<Option<String>> {
-        Ok(self.files.get(rel_path).cloned())
+    fn read_file(&self, rel_path: &str) -> Result<Option<FileContent>> {
+        Ok(self.files.get(rel_path).map(|content| {
+            if content.as_bytes().iter().take(8192).any(|&b| b == 0) {
+                FileContent::Binary
+            } else {
+                FileContent::Text(content.clone())
+            }
+        }))
     }
 
     fn file_exists(&self, rel_path: &str) -> Result<bool> {
