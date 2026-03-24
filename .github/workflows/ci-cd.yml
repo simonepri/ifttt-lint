@@ -68,7 +68,7 @@ jobs:
         uses: CodSpeedHQ/action@v4
         with:
           mode: walltime
-          run: cargo codspeed run --features test-util --bench check_bench
+          run: cargo codspeed run
 
   release:
     name: Release
