@@ -318,6 +318,50 @@ fn read_file_utf8_boundary() {
 }
 
 #[test]
+fn glob_expansion_skips_submodule_gitlinks() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo(dir.path());
+
+    std::fs::write(dir.path().join("a.rs"), "// LINT.IfChange\n").unwrap();
+    std::fs::create_dir(dir.path().join("vendor")).unwrap();
+    std::fs::write(dir.path().join("vendor/.gitkeep"), "").unwrap();
+    git_add_commit(dir.path(), "baseline");
+
+    // Register a fake submodule by adding a gitlink (mode 160000) directly to
+    // the index. Avoids the need for a separate clonable repo while exercising
+    // the exact representation `git ls-files` produces for real submodules.
+    let fake_oid = "0123456789abcdef0123456789abcdef01234567";
+    let status = std::process::Command::new("git")
+        .args([
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            &format!("160000,{fake_oid},vendor/lib"),
+        ])
+        .current_dir(dir.path())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .unwrap();
+    assert!(status.success(), "git update-index failed");
+
+    let vcs = GitVcsProvider::new(
+        dir.path().to_path_buf(),
+        None,
+        true,
+        vec![PathBuf::from("**/*")],
+    );
+    let files = vcs.validate_files();
+    assert!(
+        files.iter().any(|f| f == "a.rs"),
+        "expected glob to include tracked files, got: {files:?}"
+    );
+    assert!(
+        !files.iter().any(|f| f == "vendor/lib"),
+        "submodule gitlink should be filtered, got: {files:?}"
+    );
+}
+
+#[test]
 fn read_file_invalid_utf8_after_probe() {
     let dir = tempfile::tempdir().unwrap();
     // First 8192 bytes are valid ASCII, then invalid UTF-8 follows.

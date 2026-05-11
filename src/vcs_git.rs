@@ -386,9 +386,14 @@ fn expand_file_globs(root: &Path, files: Vec<PathBuf>) -> Vec<PathBuf> {
     result
 }
 
+/// Gitlink mode (`160000`) marks submodule entries in `git ls-files --stage`.
+/// `git ls-files` lists these like regular paths, but they reference directories
+/// rather than blobs — `read_file` would error out on them. Filter them here.
+const GITLINK_MODE: &[u8] = b"160000";
+
 fn list_tracked_files(root: &Path) -> Result<Vec<String>> {
     let output = std::process::Command::new("git")
-        .args(["ls-files", "-z"])
+        .args(["ls-files", "-z", "--stage"])
         .current_dir(root)
         .output()
         .context("git ls-files")?;
@@ -401,9 +406,24 @@ fn list_tracked_files(root: &Path) -> Result<Vec<String>> {
     Ok(output
         .stdout
         .split(|&b| b == 0)
-        .filter(|s| !s.is_empty())
-        .map(|s| String::from_utf8_lossy(s).replace('\\', "/"))
+        .filter_map(parse_ls_files_stage_record)
         .collect())
+}
+
+/// `--stage` records look like `<mode> <oid> <stage>\t<path>` (NUL-terminated).
+/// Returns `None` for empty records, malformed lines, and submodule gitlinks.
+fn parse_ls_files_stage_record(bytes: &[u8]) -> Option<String> {
+    if bytes.is_empty() {
+        return None;
+    }
+    let tab_pos = bytes.iter().position(|&b| b == b'\t')?;
+    let (meta, rest) = bytes.split_at(tab_pos);
+    let mode = meta.split(|&b| b == b' ').next()?;
+    if mode == GITLINK_MODE {
+        return None;
+    }
+    let path = &rest[1..];
+    Some(String::from_utf8_lossy(path).replace('\\', "/"))
 }
 
 #[cfg(test)]
