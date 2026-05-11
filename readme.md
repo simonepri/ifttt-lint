@@ -469,17 +469,18 @@ ifttt-lint --ignore "generated/**" --ignore "*.lock"
 
 ### Supported languages
 
-Comment style is detected by file extension. The full language registry with skip-pattern documentation lives in [`src/languages.rs`](src/languages.rs) — 43 entries covering many common file extensions.
+Comment style is detected by file extension. The full language registry with skip-pattern documentation lives in [`src/languages.rs`](src/languages.rs) — 44 entries covering many common file extensions.
 
-| Style      | Languages                                                                                                                        |
-| ---------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| `//` `/*`  | C/C++, C#, Dart, Go, Groovy, Java, JavaScript, Kotlin, Objective-C†, Protobuf, Rust, Scala, SCSS, Swift, TypeScript              |
-| `#`        | CMake, Dockerfile, Elixir, GN, GraphQL, Makefile, Nix, Perl, PowerShell, Python, R, Ruby, Shell, Starlark, Terraform, TOML, YAML |
-| `<!-- -->` | HTML, Markdown, XML                                                                                                              |
-| `--`       | Haskell, Lua, SQL                                                                                                                |
-| `;`        | Lisp / Clojure                                                                                                                   |
-| `%`        | LaTeX                                                                                                                            |
-| `/* */`    | CSS                                                                                                                              |
+| Style       | Languages                                                                                                                        |
+| ----------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `//` `/*`   | C/C++, C#, Dart, Go, Groovy, Java, JavaScript, Kotlin, Objective-C†, Protobuf, Rust, Scala, SCSS, Swift, TypeScript              |
+| `#`         | CMake, Dockerfile, Elixir, GN, GraphQL, Makefile, Nix, Perl, PowerShell, Python, R, Ruby, Shell, Starlark, Terraform, TOML, YAML |
+| `<!-- -->`  | HTML, Markdown, XML                                                                                                              |
+| `--`        | Haskell, Lua, SQL                                                                                                                |
+| `;`         | Lisp / Clojure                                                                                                                   |
+| `%`         | LaTeX                                                                                                                            |
+| `/* */`     | CSS                                                                                                                              |
+| `{{/* */}}` | Go Template / Helm (`.tpl`, `.tmpl`, `.gotmpl`, `.gohtml`)                                                                       |
 
 Multi-syntax: Vue/Svelte (`//`, `/*`, `<!--`), PHP (`//`, `/*`, `#`), Terraform (`#`, `//`, `/*`).
 

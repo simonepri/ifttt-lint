@@ -318,6 +318,19 @@ fn run_case(case: &CheckCase) {
         expected_findings: Some(&["may need to be reflected in"]),
         ..DEFAULTS
     } },
+    helm_template_block_comment = { CheckCase {
+        files: files!{
+            "templates/_helpers.tpl" => "
+                {{/* LINT.IfChange */}}
+                {{- define \"x.name\" -}}value{{- end -}}
+                {{/* LINT.ThenChange(//b.tpl) */}}
+            ",
+            "b.tpl" => "x\n",
+        },
+        changes: Some(const { &[sub("templates/_helpers.tpl", &[2])] }),
+        expected_findings: Some(&["may need to be reflected in"]),
+        ..DEFAULTS
+    } },
     percent = { CheckCase {
         files: files!{
             "test.tex" => "

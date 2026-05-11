@@ -366,6 +366,19 @@ pub static LANGUAGES: &[Language] = &[
         block_comments: SLASH_HTML_BLOCK,
         skip_patterns: BACKTICK_SKIP,
     },
+    // ── {{/* … */}} block ──
+    //
+    // Go templates (including Helm `_helpers.tpl`) only have block comments;
+    // directives are recognized when the open and close appear on the same
+    // line (`{{/* LINT.IfChange */}}`) — matching the codebase's convention
+    // of ignoring multi-line block comments.
+    Language {
+        name: "Go Template / Helm",
+        extensions: r"\.(tpl|gotmpl|gohtml|tmpl)$",
+        line_comments: NO_LINE,
+        block_comments: GO_TEMPLATE_BLOCK,
+        skip_patterns: STRING_SKIP,
+    },
 ];
 
 static FALLBACK: Language = Language {
@@ -432,6 +445,12 @@ const HTML_BLOCK: &[BlockComment] = &[BlockComment {
 const PS_BLOCK: &[BlockComment] = &[BlockComment {
     open: "<#",
     close: "#>",
+    nestable: false,
+}];
+
+const GO_TEMPLATE_BLOCK: &[BlockComment] = &[BlockComment {
+    open: "{{/*",
+    close: "*/}}",
     nestable: false,
 }];
 
