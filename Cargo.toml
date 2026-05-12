@@ -1,7 +1,7 @@
 [package]
 name = "ifttt-lint"
 # LINT.IfChange(version)
-version = "0.10.3"
+version = "0.10.4"
 # LINT.ThenChange(
 #     //readme.md:version-pre-commit,
 #     //readme.md:version-github-action,
