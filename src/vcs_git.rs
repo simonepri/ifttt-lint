@@ -265,9 +265,16 @@ fn normalize_repo_relative_path(path: &Path) -> Option<String> {
 
 fn git_diff(root: &Path, range: &str) -> Result<String> {
     let output = std::process::Command::new("git")
-        // Emit add/delete patches for renames so rename-only commits stay
-        // parseable and old paths naturally participate in reverse lookup.
-        .args(["diff", "--no-renames", range])
+        // --no-renames: emit add/delete patches for renames so rename-only
+        //   commits stay parseable and old paths naturally participate in
+        //   reverse lookup.
+        // --ignore-submodules=all: a submodule pointer change is a gitlink
+        //   (mode 160000) whose path on disk is the submodule's worktree —
+        //   a directory, not a blob. Without this, such an entry reaches
+        //   read_file and aborts the run with "<path> is a directory".
+        //   The parent repo can't validate LINT directives inside a
+        //   submodule anyway, so dropping these changes is the correct scope.
+        .args(["diff", "--no-renames", "--ignore-submodules=all", range])
         .current_dir(root)
         .output()
         .context("failed to run git diff")?;
