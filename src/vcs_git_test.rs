@@ -34,6 +34,34 @@ fn git_add_commit(dir: &Path, msg: &str) {
     }
 }
 
+/// Stage a submodule pointer (gitlink, mode 160000) without a real submodule
+/// repo. `git diff` still emits a "Subproject commit" hunk for it — the exact
+/// shape produced by a genuine submodule bump.
+fn add_gitlink(dir: &Path, path: &str, oid: &str) {
+    let status = std::process::Command::new("git")
+        .args([
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            &format!("160000,{oid},{path}"),
+        ])
+        .current_dir(dir)
+        .stderr(std::process::Stdio::null())
+        .status()
+        .unwrap();
+    assert!(status.success(), "git update-index failed");
+}
+
+fn head_sha(dir: &Path) -> String {
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "git rev-parse HEAD failed");
+    String::from_utf8(output.stdout).unwrap().trim().to_string()
+}
+
 #[parameterized(
     existing_file  = { Some("world\n"), Some("world\n") },
     missing_file   = { None,            None            },
@@ -358,6 +386,50 @@ fn glob_expansion_skips_submodule_gitlinks() {
     assert!(
         !files.iter().any(|f| f == "vendor/lib"),
         "submodule gitlink should be filtered, got: {files:?}"
+    );
+}
+
+#[test]
+fn diff_skips_submodule_pointer_changes() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo(dir.path());
+
+    std::fs::write(dir.path().join("a.txt"), "v1\n").unwrap();
+    add_gitlink(
+        dir.path(),
+        "vendored",
+        "1111111111111111111111111111111111111111",
+    );
+    git_add_commit(dir.path(), "baseline");
+    let base = head_sha(dir.path());
+
+    // A main-progression commit that bumps the submodule pointer, alongside an
+    // ordinary file change in the same range.
+    add_gitlink(
+        dir.path(),
+        "vendored",
+        "2222222222222222222222222222222222222222",
+    );
+    std::fs::write(dir.path().join("a.txt"), "v2\n").unwrap();
+    git_add_commit(dir.path(), "bump submodule and edit a.txt");
+    // The submodule's worktree exists on disk as a directory — reading it as a
+    // file would abort the run.
+    std::fs::create_dir(dir.path().join("vendored")).unwrap();
+
+    let vcs = GitVcsProvider::new(
+        dir.path().to_path_buf(),
+        Some(format!("{base}...HEAD")),
+        true,
+        vec![],
+    );
+    let changes = vcs.diff().unwrap();
+    assert!(
+        changes.contains_key("a.txt"),
+        "ordinary file changes should still appear, got: {changes:?}"
+    );
+    assert!(
+        !changes.contains_key("vendored"),
+        "submodule pointer change must not appear in the diff, got: {changes:?}"
     );
 }
 
