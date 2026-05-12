@@ -244,6 +244,132 @@ fn parse_rename_after_modification_merges_changes_for_old_path() {
     );
 }
 
+/// Strips git's `a/`/`b/` prefixes like the real git provider does.
+fn git_normalize(p: &str) -> String {
+    p.strip_prefix("a/")
+        .or_else(|| p.strip_prefix("b/"))
+        .unwrap_or(p)
+        .to_string()
+}
+
+#[test]
+fn parse_skips_binary_file_after_text_patch() {
+    // A binary entry trailing the last text patch used to leave the unified-diff
+    // parser with input it rejects outright (panic). It must now be dropped, and
+    // the preceding text patch must still parse.
+    let diff = unindent(
+        "
+        diff --git a/src/main.rs b/src/main.rs
+        index 1234567..89abcde 100644
+        --- a/src/main.rs
+        +++ b/src/main.rs
+        @@ -1,3 +1,4 @@
+         fn main() {
+        +    println!(\"hello\");
+             // existing
+         }
+        diff --git a/assets/logo.png b/assets/logo.png
+        index 1234567..89abcde 100644
+        Binary files a/assets/logo.png and b/assets/logo.png differ
+    ",
+    );
+    let map = parse(&mut Cursor::new(diff), git_normalize).unwrap();
+    assert!(map.contains_key("src/main.rs"), "text patch should parse");
+    assert!(
+        !map.contains_key("assets/logo.png"),
+        "binary file should be dropped, got: {:?}",
+        map.keys().collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn parse_skips_binary_file_between_text_patches() {
+    let diff = unindent(
+        "
+        diff --git a/a.rs b/a.rs
+        index 1111111..2222222 100644
+        --- a/a.rs
+        +++ b/a.rs
+        @@ -1,2 +1,3 @@
+         fn a() {}
+        +fn a2() {}
+         fn z() {}
+        diff --git a/img.png b/img.png
+        index 3333333..4444444 100644
+        Binary files a/img.png and b/img.png differ
+        diff --git a/b.rs b/b.rs
+        index 5555555..6666666 100644
+        --- a/b.rs
+        +++ b/b.rs
+        @@ -1,2 +1,3 @@
+         fn b() {}
+        +fn b2() {}
+         fn z() {}
+    ",
+    );
+    let map = parse(&mut Cursor::new(diff), git_normalize).unwrap();
+    assert!(map.contains_key("a.rs"), "first text patch should parse");
+    assert!(map.contains_key("b.rs"), "second text patch should parse");
+    assert!(
+        !map.contains_key("img.png"),
+        "binary file should be dropped"
+    );
+}
+
+#[test]
+fn parse_binary_only_diff_is_empty() {
+    let diff = unindent(
+        "
+        diff --git a/one.png b/one.png
+        index 1111111..2222222 100644
+        Binary files a/one.png and b/one.png differ
+        diff --git a/two.png b/two.png
+        index 3333333..4444444 100644
+        Binary files a/two.png and b/two.png differ
+    ",
+    );
+    let map = parse(&mut Cursor::new(diff), git_normalize).unwrap();
+    assert!(
+        map.is_empty(),
+        "expected no changes, got: {:?}",
+        map.keys().collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn parse_skips_git_binary_patch_block() {
+    // `git diff --binary` emits a `GIT binary patch` block instead of the
+    // `Binary files … differ` summary; that block must be dropped too.
+    let diff = unindent(
+        "
+        diff --git a/data.bin b/data.bin
+        new file mode 100644
+        index 0000000..1111111
+        GIT binary patch
+        literal 4
+        Lc${NkU|;|M0RR91
+
+        literal 0
+        HcmV?d00001
+
+        diff --git a/keep.rs b/keep.rs
+        index 2222222..3333333 100644
+        --- a/keep.rs
+        +++ b/keep.rs
+        @@ -1,2 +1,3 @@
+         fn keep() {}
+        +fn kept() {}
+         fn z() {}
+    ",
+    );
+    let map = parse(&mut Cursor::new(diff), git_normalize).unwrap();
+    assert!(map.contains_key("keep.rs"), "text patch should parse");
+    assert!(
+        !map.contains_key("data.bin"),
+        "binary patch block should be dropped"
+    );
+}
+
 #[test]
 fn parse_rename_includes_added_lines_in_old_path() {
     let diff = unindent(
