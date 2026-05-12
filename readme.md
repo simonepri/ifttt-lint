@@ -40,7 +40,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: simonepri/ifttt-lint@v0.10.2
+      - uses: simonepri/ifttt-lint@v0.10.3
 ```
 
 <!-- LINT.ThenChange(//Cargo.toml:version, //.github/workflows/ci-cd.yml:version) -->
@@ -56,7 +56,7 @@ The action mirrors the two hooks:
 
 ```yaml
 - repo: https://github.com/simonepri/ifttt-lint
-  rev: v0.10.2
+  rev: v0.10.3
   hooks:
     - id: ifttt-lint
     - id: ifttt-lint-diff
