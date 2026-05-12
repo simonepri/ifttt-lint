@@ -495,7 +495,7 @@ checksum = "3d3067d79b975e8844ca9eb072e16b31c3c1c36928edf9c6789548c524d0d954"
 
 [[package]]
 name = "ifttt-lint"
-version = "0.10.1"
+version = "0.10.2"
 dependencies = [
  "anyhow",
  "assert_cmd",
