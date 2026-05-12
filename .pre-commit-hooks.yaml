@@ -6,10 +6,16 @@
   pass_filenames: true
   stages: [pre-commit]
 
+# pre-commit shlex-splits `entry` and execs it without a shell, so a bare
+# `ifttt-lint --diff ${PRE_COMMIT_FROM_REF}..${PRE_COMMIT_TO_REF}` would pass the
+# literal `${...}` text to git. Wrap in `sh -c` so the shell expands the env vars
+# pre-commit already sets for pre-push-stage hooks. The guard makes
+# `pre-commit run --hook-stage pre-push --all-files` (no push range) a no-op —
+# the `ifttt-lint` hook covers structural validation in that case.
 - id: ifttt-lint-diff
   name: ifttt-lint (diff)
   description: Validate co-changes via LINT.IfChange/ThenChange on push (diff mode, supports NO_IFTTT suppression)
-  entry: ifttt-lint --diff ${PRE_COMMIT_FROM_REF}..${PRE_COMMIT_TO_REF}
+  entry: sh -c 'if [ -n "${PRE_COMMIT_FROM_REF:-}" ] && [ -n "${PRE_COMMIT_TO_REF:-}" ]; then exec ifttt-lint --diff "${PRE_COMMIT_FROM_REF}..${PRE_COMMIT_TO_REF}"; fi'
   language: rust
   pass_filenames: false
   always_run: true
