@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::io::Read;
 
@@ -10,10 +11,12 @@ pub fn parse(
     input: &mut dyn Read,
     normalize: impl Fn(&str) -> String,
 ) -> Result<ChangeMap, String> {
-    let mut content = String::new();
+    let mut raw = String::new();
     input
-        .read_to_string(&mut content)
+        .read_to_string(&mut raw)
         .map_err(|e| format!("failed to read diff: {e}"))?;
+
+    let content = strip_binary_sections(&raw);
 
     if content.trim().is_empty() {
         return Ok(HashMap::new());
@@ -90,6 +93,50 @@ pub fn parse(
     }
 
     Ok(result)
+}
+
+/// Drop binary-file entries from a unified diff before parsing.
+///
+/// Git represents a changed binary blob as a `Binary files a/x and b/x differ`
+/// line (or, under `--binary`, a `GIT binary patch` block) instead of the usual
+/// `@@` hunks. The unified-diff parser can't model these — and a binary entry
+/// trailing the last text patch leaves it with input it rejects outright — so we
+/// excise such sections here. Binary files can't carry `LINT` directives, so
+/// dropping them is lossless for our purposes.
+fn strip_binary_sections(content: &str) -> Cow<'_, str> {
+    if !content.contains("Binary files ") && !content.contains("GIT binary patch") {
+        return Cow::Borrowed(content);
+    }
+
+    let mut out = String::with_capacity(content.len());
+    let mut section = String::new();
+    let mut section_is_binary = false;
+
+    // `split_inclusive` keeps line terminators, so kept lines are reproduced
+    // byte-for-byte. Anything before the first `diff --git` (preamble) rides
+    // along in the first section with `section_is_binary` false.
+    for line in content.split_inclusive('\n') {
+        if line.starts_with("diff --git ") {
+            if !section_is_binary {
+                out.push_str(&section);
+            }
+            section.clear();
+            section_is_binary = false;
+        }
+        if is_binary_marker(line) {
+            section_is_binary = true;
+        }
+        section.push_str(line);
+    }
+    if !section_is_binary {
+        out.push_str(&section);
+    }
+    Cow::Owned(out)
+}
+
+fn is_binary_marker(line: &str) -> bool {
+    let line = line.trim_end_matches(['\r', '\n']);
+    line == "GIT binary patch" || (line.starts_with("Binary files ") && line.ends_with(" differ"))
 }
 
 fn merge_changes(result: &mut ChangeMap, path: String, changes: FileChanges) {
