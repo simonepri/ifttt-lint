@@ -3,6 +3,7 @@ use std::path::{Component, Path, PathBuf};
 use anyhow::{Context, Result};
 
 use crate::vcs::{ChangeMap, FileContent, FileFilter, VcsProvider};
+use crate::vcs_none::NoneVcsProvider;
 
 #[path = "udiff.rs"]
 mod udiff;
@@ -10,12 +11,9 @@ mod udiff;
 const NULL_OID: &str = "0000000000000000000000000000000000000000";
 
 pub struct GitVcsProvider {
-    root: PathBuf,
+    inner: NoneVcsProvider,
     /// Git ref range (e.g. `main...HEAD`). None when only structural validation is requested.
     diff_range: Option<String>,
-    /// When false, accept bare and single-`/` paths in ThenChange targets.
-    strict: bool,
-    files: Vec<String>,
 }
 
 impl GitVcsProvider {
@@ -33,15 +31,13 @@ impl GitVcsProvider {
                 !abs.symlink_metadata().is_ok_and(|m| m.is_symlink())
             })
             .collect();
-        let normalized = files
+        let normalized: Vec<String> = files
             .iter()
             .filter_map(|p| normalize_input_path(p, &root))
             .collect();
         Self {
-            root,
+            inner: NoneVcsProvider::new(root, strict, normalized),
             diff_range,
-            strict,
-            files: normalized,
         }
     }
 
@@ -62,12 +58,13 @@ impl VcsProvider for GitVcsProvider {
         if range_has_null_ref(range) {
             return Ok(ChangeMap::default());
         }
-        let raw = git_diff(&self.root, range)?;
+        let raw = git_diff(self.inner.root(), range)?;
         let mut changes: ChangeMap = udiff::parse(&mut std::io::Cursor::new(raw), strip_git_prefix)
             .map_err(anyhow::Error::msg)?;
         changes.retain(|path, _| {
             !self
-                .root
+                .inner
+                .root()
                 .join(path)
                 .symlink_metadata()
                 .is_ok_and(|m| m.is_symlink())
@@ -83,58 +80,27 @@ impl VcsProvider for GitVcsProvider {
         if range_has_null_ref(&log_range) {
             return Ok(None);
         }
-        Ok(parse_no_ifttt_from_commits(&self.root, &log_range))
+        Ok(parse_no_ifttt_from_commits(self.inner.root(), &log_range))
     }
 
     fn read_file(&self, rel_path: &str) -> Result<Option<FileContent>> {
-        use std::io::Read;
-        let abs = self.root.join(rel_path);
-        if abs.metadata().is_ok_and(|m| m.is_dir()) {
-            anyhow::bail!("{rel_path} is a directory");
-        }
-        let mut file = match std::fs::File::open(&abs) {
-            Ok(f) => f,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(e) if e.kind() == std::io::ErrorKind::IsADirectory => {
-                anyhow::bail!("{rel_path} is a directory")
-            }
-            Err(e) => return Err(anyhow::anyhow!(e).context(format!("read {rel_path}"))),
-        };
-        let mut probe = [0u8; 8192];
-        let n = file
-            .read(&mut probe)
-            .map_err(|e| anyhow::anyhow!(e).context(format!("read {rel_path}")))?;
-        let head = &probe[..n];
-        if head.contains(&0) || std::str::from_utf8(head).is_err_and(|e| e.error_len().is_some()) {
-            return Ok(Some(FileContent::Binary));
-        }
-        let mut buf = Vec::from(head);
-        file.read_to_end(&mut buf)
-            .map_err(|e| anyhow::anyhow!(e).context(format!("read {rel_path}")))?;
-        let text = String::from_utf8(buf)
-            .map_err(|e| anyhow::anyhow!(e).context(format!("read {rel_path}")))?;
-        Ok(Some(FileContent::Text(text)))
+        self.inner.read_file(rel_path)
     }
 
     fn file_exists(&self, rel_path: &str) -> Result<bool> {
-        let abs = self.root.join(rel_path);
-        Ok(abs.metadata().is_ok_and(|m| m.is_file()))
+        self.inner.file_exists(rel_path)
     }
 
     fn try_resolve_path(&self, raw: &str) -> Result<String, String> {
-        if self.strict {
-            crate::vcs::strict_resolve_path(raw)
-        } else {
-            crate::vcs::permissive_resolve_path(raw)
-        }
+        self.inner.try_resolve_path(raw)
     }
 
     fn is_strict(&self) -> bool {
-        self.strict
+        self.inner.is_strict()
     }
 
     fn validate_files(&self) -> &[String] {
-        &self.files
+        self.inner.validate_files()
     }
 
     fn search_string_in_files(&self, needle: &str, filter: &FileFilter<'_>) -> Result<Vec<String>> {
@@ -174,7 +140,7 @@ impl GitVcsProvider {
 
         let output = std::process::Command::new("git")
             .args(&args)
-            .current_dir(&self.root)
+            .current_dir(self.inner.root())
             .output()
             .context("git grep")?;
 
