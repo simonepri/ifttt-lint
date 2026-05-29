@@ -9,6 +9,10 @@ pub mod vcs;
 pub(crate) mod vcs_git;
 #[cfg(any(test, feature = "test-util"))]
 pub mod vcs_git;
+#[cfg(not(any(test, feature = "test-util")))]
+pub(crate) mod vcs_none;
+#[cfg(any(test, feature = "test-util"))]
+pub mod vcs_none;
 
 pub use vcs::{ChangeMap, FileChanges};
 
