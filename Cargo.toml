@@ -21,6 +21,7 @@ repository = "https://github.com/simonepri/ifttt-lint"
 test-util = []
 
 [dependencies]
+aho-corasick = "1"
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 globset = "0.4"

@@ -284,17 +284,29 @@ ifttt-lint [OPTIONS] [FILES]...
 
 | Option                   | Description                                                                                                                                      |
 | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `-d, --diff <RANGE>`     | Git ref range to diff (e.g. `main...HEAD`)                                                                                                       |
+| `-d, --diff <RANGE>`     | VCS ref range / revset to diff (e.g. `main...HEAD` for git, `main..@` for jj)                                                                    |
 | `-t, --threads <N>`      | Worker thread count (default: 2; 0 = same as 2)                                                                                                  |
 | `-i, --ignore <PATTERN>` | Permanently ignore target pattern, repeatable (glob syntax)                                                                                      |
 | `--strict=false`         | Accept bare and single-`/` paths in `ThenChange` targets (in addition to `//`). Required for codebases that use Google-internal path conventions |
 | `-f, --format <FMT>`     | Output format: `pretty` (default), `json`, `plain`                                                                                               |
+| `--vcs <KIND>`           | VCS backend: `git` or `jj`. Auto-detected from `.jj/` / `.git/` presence if omitted (see [Supported backends](#supported-backends))              |
 
 | Exit Code | Meaning                             |
 | --------- | ----------------------------------- |
 | `0`       | No errors                           |
 | `1`       | Lint errors found                   |
 | `2`       | Fatal error (bad diff, I/O failure) |
+
+### Supported backends
+
+| Backend      | Notes                                                                                                                                          |
+| ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| Git          | Uses `git diff`, `git log`, `git grep`, `git ls-files`. Requires `git` on `PATH`.                                                              |
+| Jujutsu (jj) | Uses `jj diff --git`, `jj log`, `jj file list`. Multi-pattern fixed-string search runs in-process via `aho-corasick`. Requires `jj` on `PATH`. |
+
+Auto-detected from `.jj/` / `.git/` directory presence in the current working directory or any ancestor (`.jj/` wins on colocated repos). Override with `--vcs=git|jj`.
+
+Need a different backend (Mercurial, Perforce, …)? [Open an issue](../../issues). [#32](../../pull/32) is a worked example of adding one.
 
 ### Validation
 
@@ -520,10 +532,6 @@ Yes — that's the primary use case. Directives work across any file types in th
 ### Does it work across repositories?
 
 No — paths are project-root-relative (`//`), so all linked files must live in the same repository. Cross-repo dependencies are a fundamentally harder problem (versioning, release cadence, ownership boundaries) that a comment directive can't solve. If you need cross-repo coordination, consider shared packages with versioned contracts, or a schema registry. If you have ideas on how cross-repo support could work, [open an issue](../../issues).
-
-### Does it work with Mercurial, Perforce, or other VCS?
-
-Currently only Git is supported. The core validation logic is VCS-agnostic — all VCS operations (diffs, file reads, file search) go through a [`VcsProvider` trait](src/vcs.rs), and Git is the only implemented backend ([`src/vcs_git.rs`](src/vcs_git.rs)). Adding Mercurial, Perforce, or another VCS means implementing that trait — no changes to the validation engine are needed. PRs welcome; [open an issue](../../issues) to discuss.
 
 ### My language isn't in the supported list — can I add it?
 
