@@ -64,11 +64,11 @@ jobs:
       - name: Install cargo-codspeed
         run: cargo install cargo-codspeed
       - name: Build benchmarks
-        run: cargo codspeed build -m walltime --features test-util --bench check_bench
+        run: cargo codspeed build --features test-util --bench check_bench
       - name: Run benchmarks
         uses: CodSpeedHQ/action@v4
         with:
-          mode: walltime
+          mode: simulation
           run: cargo codspeed run
 
   release:
