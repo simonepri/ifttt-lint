@@ -840,3 +840,202 @@ fn outside_root_relative_file_is_skipped() {
         "expected outside-root warning, got: {stderr}",
     );
 }
+
+/// Disposable jj repo for `--vcs=jj` smoke tests. Mirrors the `TestRepo`
+/// helper but drives jj instead of git.
+struct JjTestRepo {
+    dir: TempDir,
+}
+
+impl JjTestRepo {
+    fn new() -> Self {
+        let dir = TempDir::new().unwrap();
+        let repo = Self { dir };
+        repo.jj(&["git", "init"]);
+        repo.jj(&["config", "set", "--repo", "user.email", "test@test.com"]);
+        repo.jj(&["config", "set", "--repo", "user.name", "test"]);
+        repo
+    }
+
+    fn write(&self, path: &str, content: &str) {
+        let file_path = self.dir.path().join(path);
+        if let Some(parent) = file_path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(file_path, unindent(content)).unwrap();
+    }
+
+    /// Describe the working-copy commit, then advance with `jj new` so the
+    /// described commit is addressable as `@-` in subsequent revsets.
+    fn commit(&self, msg: &str) {
+        self.jj(&["describe", "-m", msg]);
+        self.jj(&["new"]);
+    }
+
+    fn run(&self) -> AssertCmd {
+        let mut cmd = AssertCmd::cargo_bin("ifttt-lint").unwrap();
+        cmd.current_dir(self.dir.path());
+        cmd.args(["--threads", "1"]);
+        cmd
+    }
+
+    fn jj(&self, args: &[&str]) {
+        let output = Command::new("jj")
+            .args(args)
+            .current_dir(self.dir.path())
+            .output()
+            .expect("jj must be available for integration tests; run `mise install`");
+        assert!(
+            output.status.success(),
+            "jj {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
+}
+
+#[test]
+fn jj_explicit_diff_reports_co_change_violation() {
+    let repo = JjTestRepo::new();
+    repo.write(
+        "config.py",
+        "# LINT.IfChange(upload)
+        MAX = 50
+        # LINT.ThenChange(//docs.md:upload)
+        ",
+    );
+    repo.write(
+        "docs.md",
+        "<!-- LINT.IfChange(upload) -->
+        Up to 50 MB.
+        <!-- LINT.ThenChange(//config.py:upload) -->
+        ",
+    );
+    repo.commit("baseline");
+
+    repo.write(
+        "config.py",
+        "# LINT.IfChange(upload)
+        MAX = 100
+        # LINT.ThenChange(//docs.md:upload)
+        ",
+    );
+    repo.commit("bump limit (forgot docs)");
+
+    // After two commit() helpers: @ is the working-copy empty commit,
+    // @- = "bump", @-- = "baseline". The diff range is @-- (baseline) to @- (bump).
+    let result = repo
+        .run()
+        .args(["--vcs", "jj", "--diff", "@--..@-"])
+        .assert()
+        .failure()
+        .code(1);
+    let stderr = String::from_utf8_lossy(&result.get_output().stderr);
+    assert!(
+        stderr.contains("docs.md"),
+        "expected co-change warning pointing at docs.md, got: {stderr}",
+    );
+}
+
+#[test]
+fn jj_auto_detected_when_dot_jj_present() {
+    // Two committed revisions with a co-change violation. Using `--diff`
+    // forces the diff/suppressions path on the auto-detected backend; only
+    // the jj backend can resolve `@--..@-` as a revset, so this test fails
+    // if detection routes to the git backend instead.
+    let repo = JjTestRepo::new();
+    repo.write(
+        "a.rs",
+        "// LINT.IfChange
+        old_a
+        // LINT.ThenChange(//b.rs)
+        ",
+    );
+    repo.write("b.rs", "old_b\n");
+    repo.commit("baseline");
+
+    repo.write(
+        "a.rs",
+        "// LINT.IfChange
+        new_a
+        // LINT.ThenChange(//b.rs)
+        ",
+    );
+    repo.commit("update a only");
+
+    // No --vcs flag — detection should pick jj from the .jj/ directory.
+    let result = repo
+        .run()
+        .args(["--diff", "@--..@-"])
+        .assert()
+        .failure()
+        .code(1);
+    let stderr = String::from_utf8_lossy(&result.get_output().stderr);
+    assert!(
+        stderr.contains("b.rs"),
+        "expected finding mentioning b.rs, got: {stderr}",
+    );
+}
+
+#[test]
+fn explicit_vcs_jj_without_dot_jj_dir_errors() {
+    // Plain git repo (no .jj/) but the user explicitly asks for jj.
+    let repo = TestRepo::new();
+    repo.write("hello.rs", "fn main() {}\n");
+    repo.commit("initial");
+
+    let result = repo
+        .run()
+        .args(["--vcs", "jj", "--diff", "HEAD~1..HEAD"])
+        .assert()
+        .failure()
+        .code(2);
+    let stderr = String::from_utf8_lossy(&result.get_output().stderr);
+    assert!(
+        // jj's own error when invoked outside a workspace — we just need to
+        // confirm the binary was the one consulted (i.e. we routed to the jj
+        // backend).
+        stderr.to_lowercase().contains("jj") || stderr.contains("workspace"),
+        "expected jj-flavored error, got: {stderr}",
+    );
+}
+
+#[test]
+fn explicit_vcs_git_runs_git_backend() {
+    // Confirms that `--vcs git` bypasses auto-detection: the backend stays git
+    // even though no .jj/ is present (auto-detect would also pick git here,
+    // but this asserts the explicit flag wires through).
+    let repo = TestRepo::new();
+    repo.write(
+        "a.rs",
+        "
+        // LINT.IfChange
+        old_a
+        // LINT.ThenChange(//b.rs)
+        ",
+    );
+    repo.write("b.rs", "old_b\n");
+    repo.commit("initial");
+
+    repo.write(
+        "a.rs",
+        "
+        // LINT.IfChange
+        new_a
+        // LINT.ThenChange(//b.rs)
+        ",
+    );
+    repo.commit("update a only");
+
+    let result = repo
+        .run()
+        .args(["--vcs", "git", "--diff", "HEAD~1..HEAD"])
+        .assert()
+        .failure()
+        .code(1);
+    let stderr = String::from_utf8_lossy(&result.get_output().stderr);
+    assert!(
+        stderr.contains("b.rs"),
+        "expected finding mentioning b.rs, got: {stderr}",
+    );
+}

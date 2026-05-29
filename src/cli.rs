@@ -1,10 +1,10 @@
-use std::path::PathBuf;
-use std::process::ExitCode;
+use std::path::{Path, PathBuf};
+use std::process::{Command, ExitCode, Stdio};
 
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 
-use crate::vcs::VcsProvider as _;
-use crate::{check, reports, vcs_git};
+use crate::vcs::VcsProvider;
+use crate::{check, reports, vcs_git, vcs_jj};
 
 #[derive(Parser)]
 #[command(
@@ -13,7 +13,7 @@ use crate::{check, reports, vcs_git};
     about = "Enforces atomic changes via LINT.IfChange/ThenChange directives"
 )]
 struct Cli {
-    /// Git ref range to diff (e.g. main...HEAD).
+    /// VCS ref range / revset to diff (e.g. `main...HEAD` for git, `main..@` for jj).
     #[arg(short, long)]
     diff: Option<String>,
 
@@ -38,6 +38,16 @@ struct Cli {
     /// Output format.
     #[arg(short, long, default_value = "pretty")]
     format: reports::Format,
+
+    /// VCS backend. Auto-detected from `.jj/` / `.git/` presence if omitted.
+    #[arg(long, value_enum)]
+    vcs: Option<VcsKind>,
+}
+
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+enum VcsKind {
+    Git,
+    Jj,
 }
 
 pub fn run() -> ExitCode {
@@ -56,7 +66,12 @@ pub fn run() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    let root = match vcs_git::GitVcsProvider::resolve_root() {
+    let vcs_kind = resolve_vcs_kind(cli.vcs);
+    if let Err(code) = ensure_binary_available(vcs_kind) {
+        return code;
+    }
+
+    let root = match resolve_root(vcs_kind) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("error: {e}");
@@ -68,7 +83,14 @@ pub fn run() -> ExitCode {
     // diff entirely — co-change checking belongs to the push hook, not pre-commit.
     let structural_only = !cli.files.is_empty() && cli.diff.is_none();
 
-    let vcs = vcs_git::GitVcsProvider::new(root, cli.diff, cli.strict, cli.files);
+    let vcs: Box<dyn VcsProvider> = match vcs_kind {
+        VcsKind::Git => Box::new(vcs_git::GitVcsProvider::new(
+            root, cli.diff, cli.strict, cli.files,
+        )),
+        VcsKind::Jj => Box::new(vcs_jj::JjVcsProvider::new(
+            root, cli.diff, cli.strict, cli.files,
+        )),
+    };
 
     let changes = if structural_only {
         crate::vcs::ChangeMap::default()
@@ -119,7 +141,7 @@ pub fn run() -> ExitCode {
         })
         .collect();
 
-    let result = match check::check(&vcs, &changes, &ignore_patterns, threads) {
+    let result = match check::check(vcs.as_ref(), &changes, &ignore_patterns, threads) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("error: {e}");
@@ -141,6 +163,56 @@ pub fn run() -> ExitCode {
         eprint!("{output}");
     }
     ExitCode::from(1)
+}
+
+/// Resolve the backend to use. Explicit `--vcs` wins; otherwise auto-detect
+/// from the marker directories. Auto-detection scans the current working
+/// directory and its ancestors — `.jj/` takes precedence over `.git/` so users
+/// running jj on a colocated repo get jj's view by default.
+fn resolve_vcs_kind(explicit: Option<VcsKind>) -> VcsKind {
+    if let Some(kind) = explicit {
+        return kind;
+    }
+    let Ok(cwd) = std::env::current_dir() else {
+        return VcsKind::Git;
+    };
+    detect_vcs_from_ancestors(&cwd)
+}
+
+fn detect_vcs_from_ancestors(start: &Path) -> VcsKind {
+    for dir in start.ancestors() {
+        if dir.join(".jj").is_dir() {
+            return VcsKind::Jj;
+        }
+        if dir.join(".git").exists() {
+            return VcsKind::Git;
+        }
+    }
+    VcsKind::Git
+}
+
+fn resolve_root(kind: VcsKind) -> anyhow::Result<PathBuf> {
+    match kind {
+        VcsKind::Git => vcs_git::GitVcsProvider::resolve_root(),
+        VcsKind::Jj => vcs_jj::JjVcsProvider::resolve_root(),
+    }
+}
+
+fn ensure_binary_available(kind: VcsKind) -> Result<(), ExitCode> {
+    let (bin, install) = match kind {
+        VcsKind::Git => ("git", "https://git-scm.com/downloads"),
+        VcsKind::Jj => ("jj", "https://jj-vcs.dev/latest/install-and-setup/"),
+    };
+    let probe = Command::new(bin)
+        .arg("--version")
+        .stderr(Stdio::null())
+        .stdout(Stdio::null())
+        .status();
+    if probe.is_ok_and(|s| s.success()) {
+        return Ok(());
+    }
+    eprintln!("error: {bin} not found on PATH. Install: {install}");
+    Err(ExitCode::from(2))
 }
 
 #[cfg(test)]

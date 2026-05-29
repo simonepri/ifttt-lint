@@ -1,3 +1,4 @@
 [tools]
 rust = "stable"
 pre-commit = "latest"
+jujutsu = "latest"
