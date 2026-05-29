@@ -95,6 +95,17 @@ pub fn parse(
     Ok(result)
 }
 
+/// Strip the `a/` / `b/` prefixes that git's `--git` unified-diff puts on
+/// every path. `jj diff --git` follows the same convention, so both backends
+/// pass this as their `normalize` callback. The strip is a no-op for paths
+/// that don't carry the prefix.
+pub(crate) fn strip_diff_prefix(path: &str) -> String {
+    path.strip_prefix("a/")
+        .or_else(|| path.strip_prefix("b/"))
+        .unwrap_or(path)
+        .to_string()
+}
+
 /// Drop binary-file entries from a unified diff before parsing.
 ///
 /// Git represents a changed binary blob as a `Binary files a/x and b/x differ`

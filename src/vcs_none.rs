@@ -1,8 +1,79 @@
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use anyhow::Result;
 
 use crate::vcs::{ChangeMap, FileContent, FileFilter, VcsProvider};
+
+pub(crate) fn absolute_path(root: &Path, path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        return path.to_path_buf();
+    }
+
+    root.join(path)
+}
+
+pub(crate) fn is_glob_pattern(s: &str) -> bool {
+    s.contains('*') || s.contains('?') || s.contains('[')
+}
+
+/// `symlink_metadata` does not dereference, so symlinks are reported as such
+/// even when the target is broken. Returns `false` on any I/O error (missing
+/// path, permission denied) — callers treat those identically to "not a
+/// symlink" and either skip the entry or surface a different error downstream.
+pub(crate) fn is_symlink(path: &Path) -> bool {
+    path.symlink_metadata().is_ok_and(|m| m.is_symlink())
+}
+
+pub(crate) fn normalize_input_path(path: &Path, root: &Path) -> Option<String> {
+    let rel = if path.is_absolute() {
+        let Ok(rel) = path.strip_prefix(root) else {
+            eprintln!(
+                "warning: '{}' is outside the project root and will be skipped",
+                path.display()
+            );
+            return None;
+        };
+        rel
+    } else {
+        path
+    };
+
+    let Some(normalized) = normalize_repo_relative_path(rel) else {
+        eprintln!(
+            "warning: '{}' is outside the project root and will be skipped",
+            path.display()
+        );
+        return None;
+    };
+
+    if normalized.is_empty() {
+        eprintln!(
+            "warning: '{}' is outside the project root and will be skipped",
+            path.display()
+        );
+        return None;
+    }
+
+    Some(normalized)
+}
+
+fn normalize_repo_relative_path(path: &Path) -> Option<String> {
+    let normalized = path.to_string_lossy().replace('\\', "/");
+    let mut parts = Vec::new();
+
+    for component in Path::new(&normalized).components() {
+        match component {
+            Component::CurDir => {}
+            Component::Normal(part) => parts.push(part.to_string_lossy().into_owned()),
+            Component::ParentDir => {
+                parts.pop()?;
+            }
+            Component::RootDir | Component::Prefix(_) => return None,
+        }
+    }
+
+    Some(parts.join("/"))
+}
 
 /// Filesystem-backed `VcsProvider` that knows nothing about a VCS.
 ///
