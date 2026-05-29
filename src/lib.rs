@@ -3,6 +3,7 @@ pub mod cli;
 pub(crate) mod languages;
 pub(crate) mod parser;
 pub mod reports;
+pub(crate) mod udiff;
 pub mod vcs;
 // pub(crate) for normal builds; exposed for benchmarks behind test-util.
 #[cfg(not(any(test, feature = "test-util")))]

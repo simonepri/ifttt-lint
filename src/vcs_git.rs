@@ -1,12 +1,12 @@
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
+use crate::udiff;
 use crate::vcs::{ChangeMap, FileContent, FileFilter, VcsProvider};
-use crate::vcs_none::NoneVcsProvider;
-
-#[path = "udiff.rs"]
-mod udiff;
+use crate::vcs_none::{
+    absolute_path, is_glob_pattern, is_symlink, normalize_input_path, NoneVcsProvider,
+};
 
 const NULL_OID: &str = "0000000000000000000000000000000000000000";
 
@@ -26,10 +26,7 @@ impl GitVcsProvider {
         let files = expand_file_globs(&root, files);
         let files: Vec<PathBuf> = files
             .into_iter()
-            .filter(|p| {
-                let abs = absolute_path(&root, p);
-                !abs.symlink_metadata().is_ok_and(|m| m.is_symlink())
-            })
+            .filter(|p| !is_symlink(&absolute_path(&root, p)))
             .collect();
         let normalized: Vec<String> = files
             .iter()
@@ -59,16 +56,10 @@ impl VcsProvider for GitVcsProvider {
             return Ok(ChangeMap::default());
         }
         let raw = git_diff(self.inner.root(), range)?;
-        let mut changes: ChangeMap = udiff::parse(&mut std::io::Cursor::new(raw), strip_git_prefix)
-            .map_err(anyhow::Error::msg)?;
-        changes.retain(|path, _| {
-            !self
-                .inner
-                .root()
-                .join(path)
-                .symlink_metadata()
-                .is_ok_and(|m| m.is_symlink())
-        });
+        let mut changes: ChangeMap =
+            udiff::parse(&mut std::io::Cursor::new(raw), udiff::strip_diff_prefix)
+                .map_err(anyhow::Error::msg)?;
+        changes.retain(|path, _| !is_symlink(&self.inner.root().join(path)));
         Ok(changes)
     }
 
@@ -163,72 +154,6 @@ impl GitVcsProvider {
     }
 }
 
-fn strip_git_prefix(path: &str) -> String {
-    path.strip_prefix("a/")
-        .or_else(|| path.strip_prefix("b/"))
-        .unwrap_or(path)
-        .to_string()
-}
-
-fn absolute_path(root: &Path, path: &Path) -> PathBuf {
-    if path.is_absolute() {
-        return path.to_path_buf();
-    }
-
-    root.join(path)
-}
-
-fn normalize_input_path(path: &Path, root: &Path) -> Option<String> {
-    let rel = if path.is_absolute() {
-        let Ok(rel) = path.strip_prefix(root) else {
-            eprintln!(
-                "warning: '{}' is outside the project root and will be skipped",
-                path.display()
-            );
-            return None;
-        };
-        rel
-    } else {
-        path
-    };
-
-    let Some(normalized) = normalize_repo_relative_path(rel) else {
-        eprintln!(
-            "warning: '{}' is outside the project root and will be skipped",
-            path.display()
-        );
-        return None;
-    };
-
-    if normalized.is_empty() {
-        eprintln!(
-            "warning: '{}' is outside the project root and will be skipped",
-            path.display()
-        );
-        return None;
-    }
-
-    Some(normalized)
-}
-
-fn normalize_repo_relative_path(path: &Path) -> Option<String> {
-    let normalized = path.to_string_lossy().replace('\\', "/");
-    let mut parts = Vec::new();
-
-    for component in Path::new(&normalized).components() {
-        match component {
-            Component::CurDir => {}
-            Component::Normal(part) => parts.push(part.to_string_lossy().into_owned()),
-            Component::ParentDir => {
-                parts.pop()?;
-            }
-            Component::RootDir | Component::Prefix(_) => return None,
-        }
-    }
-
-    Some(parts.join("/"))
-}
-
 fn git_diff(root: &Path, range: &str) -> Result<String> {
     let output = std::process::Command::new("git")
         // --no-renames: emit add/delete patches for renames so rename-only
@@ -307,10 +232,6 @@ fn range_has_null_ref(range: &str) -> bool {
 
 fn split_range(range: &str) -> Option<(&str, &str)> {
     range.rsplit_once("...").or_else(|| range.rsplit_once(".."))
-}
-
-fn is_glob_pattern(s: &str) -> bool {
-    s.contains('*') || s.contains('?') || s.contains('[')
 }
 
 /// Expands file arguments that contain glob characters (`*`, `?`, `[`) against
