@@ -598,19 +598,21 @@ fn is_triggered(pair: &DirectivePair, sorted: Option<&SortedLines>) -> bool {
         return false;
     }
 
-    // Brand-new pair: IfChange was added but not removed at its position.
-    // The block is being established for the first time, not modifying prior
-    // state — content lines may appear in `sorted.added` because the whole
-    // block is new, not because they were changed. A label rename is
-    // distinguishable because it both adds and removes the IfChange line.
+    // Brand-new pair: both directive lines were added in this diff, so the
+    // whole block is being established for the first time. Content lines appear
+    // in `sorted.added` because the block is new, not because prior coupled
+    // content changed — the coupling didn't exist before, so nothing can be out
+    // of sync yet. Requiring *both* directives to be added (not just IfChange)
+    // avoids a false negative when a removal's new-file position collides with
+    // the IfChange line — e.g. a pair added where the file's previous line was
+    // deleted in the same diff. A label rename leaves the ThenChange line as
+    // unchanged context, so it is not mistaken for a new pair and still
+    // triggers on content changes.
     let if_change_added =
         SortedLines::any_in_range(&sorted.added, pair.if_line.get(), pair.if_line.get());
-    let if_change_removed = SortedLines::any_in_range(
-        &sorted.removed_new_pos,
-        pair.if_line.get(),
-        pair.if_line.get(),
-    );
-    if if_change_added && !if_change_removed {
+    let then_change_added =
+        SortedLines::any_in_range(&sorted.added, pair.then_line.get(), pair.then_line.get());
+    if if_change_added && then_change_added {
         return false;
     }
 
