@@ -366,11 +366,12 @@ config/upload.py:1: warning: changes in this block may need to be reflected in a
 
 **Does not fire:**
 
-Adding a new directive pair around existing code — the directive is being established, not the content changed:
+Adding a new directive pair — the directive is being established, not the content changed. This holds even when the guarded content is also new or modified in the same diff: the coupling didn't exist before, so nothing can be out of sync yet. A pair counts as new when both its `IfChange` and `ThenChange` lines are added (a label rename leaves the `ThenChange` line as context, so renaming still validates content):
 
 ```diff
 + // LINT.IfChange(speed_threshold)
-  SPEED_THRESHOLD_MPH = 88
+- SPEED_LIMIT_MPH = 65
++ SPEED_THRESHOLD_MPH = 88
 + // LINT.ThenChange(//docs/delorean.md:speed_threshold)
 ```
 

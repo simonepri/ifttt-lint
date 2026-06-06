@@ -2326,8 +2326,8 @@ fn non_strict(case: CheckCase) {
         },
         // IfChange line AND content line both substituted simultaneously.
         // Renaming a label while also modifying content must still trigger —
-        // the is_triggered guard only suppresses brand-new pairs (IfChange
-        // added without a matching removal at its position).
+        // the brand-new-pair guard only suppresses when *both* directive lines
+        // are added, and here the ThenChange line is unchanged context.
         changes: Some(const { &[sub("a.rs", &[1, 2])] }),
         expected_findings: Some(&["may need to be reflected in b.rs"]),
         expected_finding_count: Some(1),
@@ -2443,11 +2443,12 @@ fn directive_only_changes(case: CheckCase) {
         ..DEFAULTS
     } },
     wrap_existing_code_with_modification = { CheckCase {
-        // Wrapping existing code in a new directive pair AND modifying content
-        // in the same diff must trigger — the brand-new-pair heuristic only
-        // suppresses when the IfChange was added without a matching removal.
-        // Here the old content was replaced (removal at position 1), so the
-        // pair is not treated as brand-new.
+        // Establishing a brand-new pair (both directive lines added) does not
+        // trigger, even when the guarded content is also new and an old line was
+        // replaced at the IfChange position. The coupling didn't exist before
+        // this diff, so nothing can be out of sync yet. This must match
+        // `new_pair_with_new_content` (same intent, no removal collision); the
+        // incidental removal at position 1 must not change the outcome.
         files: files!{
             "a.rs" => "
                 // LINT.IfChange
@@ -2459,8 +2460,8 @@ fn directive_only_changes(case: CheckCase) {
         // Old file was `old_content` → replaced by IfChange + new_content + ThenChange.
         // added=[1,2,3], removed_new_pos=[1] (old line replaced at position 1).
         changes: Some(&[("a.rs", &[1, 2, 3], &[1])]),
-        expected_findings: Some(&["may need to be reflected in b.rs"]),
-        expected_finding_count: Some(1),
+        expected_findings: Some(&[]),
+        expected_finding_count: Some(0),
         ..DEFAULTS
     } },
     content_removal_collapsed_to_then_change_line = { CheckCase {
