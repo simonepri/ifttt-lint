@@ -371,6 +371,83 @@ fn parse_skips_git_binary_patch_block() {
 }
 
 #[test]
+fn parse_skips_mode_only_change_after_text_patch() {
+    // A `chmod`-only entry (no hunks) trailing the last text patch used to
+    // panic the unified-diff parser. It must be dropped, and the preceding
+    // text patch must still parse. See issue #37.
+    let diff = unindent(
+        "
+        diff --git a/src/main.rs b/src/main.rs
+        index 1234567..89abcde 100644
+        --- a/src/main.rs
+        +++ b/src/main.rs
+        @@ -1,3 +1,4 @@
+         fn main() {
+        +    println!(\"hello\");
+             // existing
+         }
+        diff --git a/file.sh b/file.sh
+        old mode 100644
+        new mode 100755
+    ",
+    );
+    let map = parse(&mut Cursor::new(diff), git_normalize).unwrap();
+    assert!(map.contains_key("src/main.rs"), "text patch should parse");
+    assert!(
+        !map.contains_key("file.sh"),
+        "mode-only change should be dropped, got: {:?}",
+        map.keys().collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn parse_mode_only_change_is_empty() {
+    // The minimal repro from issue #37: a diff that is nothing but a `chmod`.
+    let diff = unindent(
+        "
+        diff --git a/file.sh b/file.sh
+        old mode 100644
+        new mode 100755
+    ",
+    );
+    let map = parse(&mut Cursor::new(diff), git_normalize).unwrap();
+    assert!(
+        map.is_empty(),
+        "expected no changes, got: {:?}",
+        map.keys().collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn parse_skips_pure_rename_after_text_patch() {
+    // A 100%-similarity rename carries no hunks; trailing the last text patch
+    // it would panic the parser, so it must be dropped too.
+    let diff = unindent(
+        "
+        diff --git a/keep.rs b/keep.rs
+        index 1234567..89abcde 100644
+        --- a/keep.rs
+        +++ b/keep.rs
+        @@ -1,2 +1,3 @@
+         fn keep() {}
+        +fn kept() {}
+         fn z() {}
+        diff --git a/old.txt b/new.txt
+        similarity index 100%
+        rename from old.txt
+        rename to new.txt
+    ",
+    );
+    let map = parse(&mut Cursor::new(diff), git_normalize).unwrap();
+    assert!(map.contains_key("keep.rs"), "text patch should parse");
+    assert!(
+        !map.contains_key("new.txt") && !map.contains_key("old.txt"),
+        "pure rename should be dropped, got: {:?}",
+        map.keys().collect::<Vec<_>>()
+    );
+}
+
+#[test]
 fn parse_rename_includes_added_lines_in_old_path() {
     let diff = unindent(
         "
