@@ -16,7 +16,7 @@ pub fn parse(
         .read_to_string(&mut raw)
         .map_err(|e| format!("failed to read diff: {e}"))?;
 
-    let content = strip_binary_sections(&raw);
+    let content = strip_bodiless_sections(&raw);
 
     if content.trim().is_empty() {
         return Ok(HashMap::new());
@@ -106,48 +106,68 @@ pub(crate) fn strip_diff_prefix(path: &str) -> String {
         .to_string()
 }
 
-/// Drop binary-file entries from a unified diff before parsing.
+/// Drop diff sections the unified-diff parser can't model.
 ///
-/// Git represents a changed binary blob as a `Binary files a/x and b/x differ`
-/// line (or, under `--binary`, a `GIT binary patch` block) instead of the usual
-/// `@@` hunks. The unified-diff parser can't model these — and a binary entry
-/// trailing the last text patch leaves it with input it rejects outright — so we
-/// excise such sections here. Binary files can't carry `LINT` directives, so
-/// dropping them is lossless for our purposes.
-fn strip_binary_sections(content: &str) -> Cow<'_, str> {
-    if !content.contains("Binary files ") && !content.contains("GIT binary patch") {
-        return Cow::Borrowed(content);
-    }
-
-    let mut out = String::with_capacity(content.len());
-    let mut section = String::new();
-    let mut section_is_binary = false;
-
-    // `split_inclusive` keeps line terminators, so kept lines are reproduced
-    // byte-for-byte. Anything before the first `diff --git` (preamble) rides
-    // along in the first section with `section_is_binary` false.
-    for line in content.split_inclusive('\n') {
-        if line.starts_with("diff --git ") {
-            if !section_is_binary {
-                out.push_str(&section);
+/// `patch::Patch::from_multiple` only parses a file section that carries `@@`
+/// hunks. Git and jj emit several kinds of section that have none:
+///
+/// - binary blobs — a `Binary files a/x and b/x differ` summary, or a
+///   `GIT binary patch` block under `--binary`;
+/// - metadata-only changes — a `chmod` shows up as `old mode`/`new mode`, a
+///   pure rename or copy as `rename from`/`rename to`, and an empty new or
+///   deleted file as a lone `new file mode`/`deleted file mode`.
+///
+/// The parser absorbs a hunkless section as preamble only when another hunked
+/// patch follows it; one trailing the final patch (or standing alone) leaves it
+/// with input it rejects outright, panicking. None of these sections carry
+/// changed `LINT` directive lines, so excising them is lossless for our purposes.
+fn strip_bodiless_sections(content: &str) -> Cow<'_, str> {
+    // `out` stays `None` — and the borrow is returned untouched — until the
+    // first section is dropped, at which point it's seeded with everything kept
+    // so far. Kept lines are reproduced byte-for-byte from the original slice.
+    let mut out: Option<String> = None;
+    let mut flush = |start: usize, end: usize, keep: bool| {
+        if let Some(s) = out.as_mut() {
+            if keep {
+                s.push_str(&content[start..end]);
             }
-            section.clear();
-            section_is_binary = false;
+        } else if !keep {
+            out = Some(content[..start].to_string());
         }
-        if is_binary_marker(line) {
-            section_is_binary = true;
-        }
-        section.push_str(line);
-    }
-    if !section_is_binary {
-        out.push_str(&section);
-    }
-    Cow::Owned(out)
-}
+    };
 
-fn is_binary_marker(line: &str) -> bool {
-    let line = line.trim_end_matches(['\r', '\n']);
-    line == "GIT binary patch" || (line.starts_with("Binary files ") && line.ends_with(" differ"))
+    // A section runs from one `diff --git` line to the next. Content before the
+    // first such line is preamble and is always kept.
+    let mut section_start = 0;
+    let mut pos = 0;
+    let mut in_file_section = false;
+    let mut section_has_hunk = false;
+    for line in content.split_inclusive('\n') {
+        let line_start = pos;
+        pos += line.len();
+        if line.starts_with("diff --git ") {
+            flush(
+                section_start,
+                line_start,
+                !in_file_section || section_has_hunk,
+            );
+            section_start = line_start;
+            in_file_section = true;
+            section_has_hunk = false;
+        } else if line.starts_with("@@ ") {
+            section_has_hunk = true;
+        }
+    }
+    flush(
+        section_start,
+        content.len(),
+        !in_file_section || section_has_hunk,
+    );
+
+    match out {
+        Some(stripped) => Cow::Owned(stripped),
+        None => Cow::Borrowed(content),
+    }
 }
 
 fn merge_changes(result: &mut ChangeMap, path: String, changes: FileChanges) {
