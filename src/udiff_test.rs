@@ -468,3 +468,51 @@ fn parse_rename_includes_added_lines_in_old_path() {
         old_changes.added_lines,
     );
 }
+
+#[test]
+fn parse_mid_hunk_no_newline_marker() {
+    // Toggling the last line's trailing newline puts a `\ No newline at end of
+    // file` marker between the `-` and `+` lines. The parser used to choke on the
+    // `+` line after the marker; the marker must be dropped and the change kept.
+    let diff = unindent(
+        "
+        --- a/a.txt
+        +++ b/a.txt
+        @@ -1 +1 @@
+        -hello
+        \\ No newline at end of file
+        +hello
+    ",
+    );
+    let map = parse(&mut Cursor::new(diff), git_normalize).unwrap();
+    let changes = &map["a.txt"];
+    assert!(changes.added_lines.contains(&1), "added line 1 expected");
+    assert!(
+        changes.removed_lines.contains(&1),
+        "removed line 1 expected"
+    );
+}
+
+#[test]
+fn parse_trailing_no_newline_marker() {
+    // A marker at the very end of a hunk (the case the parser already tolerated)
+    // must keep working once we strip markers ourselves.
+    let diff = unindent(
+        "
+        --- a/a.txt
+        +++ b/a.txt
+        @@ -1,2 +1,2 @@
+         keep
+        -old
+        +new
+        \\ No newline at end of file
+    ",
+    );
+    let map = parse(&mut Cursor::new(diff), git_normalize).unwrap();
+    let changes = &map["a.txt"];
+    assert!(changes.added_lines.contains(&2), "added line 2 expected");
+    assert!(
+        changes.removed_lines.contains(&2),
+        "removed line 2 expected"
+    );
+}

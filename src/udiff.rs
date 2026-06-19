@@ -17,6 +17,7 @@ pub fn parse(
         .map_err(|e| format!("failed to read diff: {e}"))?;
 
     let content = strip_bodiless_sections(&raw);
+    let content = strip_no_newline_markers(&content);
 
     if content.trim().is_empty() {
         return Ok(HashMap::new());
@@ -168,6 +169,26 @@ fn strip_bodiless_sections(content: &str) -> Cow<'_, str> {
         Some(stripped) => Cow::Owned(stripped),
         None => Cow::Borrowed(content),
     }
+}
+
+/// Drop `\ No newline at end of file` markers. The parser tolerates one only at
+/// the very end of a patch, but git emits one mid-hunk whenever a change toggles
+/// the trailing newline of the last line, leaving the parser with the unconsumed
+/// line that follows. The marker is metadata, not file content, so removing it is
+/// lossless for line-number tracking.
+fn strip_no_newline_markers(content: &str) -> Cow<'_, str> {
+    const MARKER: &str = "\\ No newline at end of file";
+    if !content.contains(MARKER) {
+        return Cow::Borrowed(content);
+    }
+
+    let mut out = String::with_capacity(content.len());
+    for line in content.split_inclusive('\n') {
+        if line.trim_end_matches(['\r', '\n']) != MARKER {
+            out.push_str(line);
+        }
+    }
+    Cow::Owned(out)
 }
 
 fn merge_changes(result: &mut ChangeMap, path: String, changes: FileChanges) {
