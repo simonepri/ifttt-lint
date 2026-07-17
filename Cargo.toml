@@ -25,7 +25,7 @@ aho-corasick = "1"
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 globset = "0.4"
-patch = "0.7"
+patchkit = "0.3"
 rayon = "1"
 regex = "1"
 serde = { version = "1", features = ["derive"] }

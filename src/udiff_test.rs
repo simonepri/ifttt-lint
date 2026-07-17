@@ -171,13 +171,13 @@ fn parse_deletion_after_modification_sets_deleted_flag() {
         "
         --- foo.rs
         +++ foo.rs
-        @@ -1,3 +1,4 @@
+        @@ -1,2 +1,3 @@
          fn a() {}
         +fn b() {}
          fn c() {}
         --- foo.rs
         +++ /dev/null
-        @@ -1,4 +0,0 @@
+        @@ -1,3 +0,0 @@
         -fn a() {}
         -fn b() {}
         -fn c() {}
@@ -217,13 +217,13 @@ fn parse_rename_after_modification_merges_changes_for_old_path() {
         "
         --- old.rs
         +++ old.rs
-        @@ -1,3 +1,4 @@
+        @@ -1,2 +1,3 @@
          fn a() {}
         +fn added_by_modify() {}
          fn c() {}
         --- old.rs
         +++ new.rs
-        @@ -1,4 +1,5 @@
+        @@ -1,3 +1,4 @@
          fn a() {}
          fn added_by_modify() {}
         +fn added_by_rename() {}
@@ -515,4 +515,185 @@ fn parse_trailing_no_newline_marker() {
         changes.removed_lines.contains(&2),
         "removed line 2 expected"
     );
+}
+
+// Regression tests for https://github.com/simonepri/ifttt-lint/issues/41 —
+// a removed line that starts with `--` (e.g. a SQL comment) renders as
+// `--- …` in the hunk body and must not be mistaken for a file header.
+
+#[test]
+fn parse_deleted_file_whose_lines_start_with_dashes() {
+    // The deleted file comes second: the leftover-input failure mode that
+    // used to panic (exit 101) instead of returning an error.
+    let diff = unindent(
+        "
+        diff --git a/a_first.txt b/a_first.txt
+        index 1234567..89abcde 100644
+        --- a/a_first.txt
+        +++ b/a_first.txt
+        @@ -1,2 +1,2 @@
+         hello
+        -world
+        +changed
+        diff --git a/z_second.sql b/z_second.sql
+        deleted file mode 100644
+        index 73d8959..0000000
+        --- a/z_second.sql
+        +++ /dev/null
+        @@ -1,3 +0,0 @@
+        --- a comment line
+        --- another comment
+        -SELECT 1;
+    ",
+    );
+    let map = parse(&mut Cursor::new(diff), git_normalize).unwrap();
+    let first = &map["a_first.txt"];
+    assert!(first.added_lines.contains(&2), "a_first.txt line 2 changed");
+    assert!(
+        first.removed_lines.contains(&2),
+        "a_first.txt line 2 removed"
+    );
+    assert!(
+        map["z_second.sql"].deleted,
+        "z_second.sql should be deleted"
+    );
+}
+
+#[test]
+fn parse_first_file_deletion_with_dash_dash_lines() {
+    // The deleted file comes first: the failure mode that used to surface as
+    // a parse error (exit 2).
+    let diff = unindent(
+        "
+        diff --git a/schema.sql b/schema.sql
+        deleted file mode 100644
+        index 73d8959..0000000
+        --- a/schema.sql
+        +++ /dev/null
+        @@ -1,3 +0,0 @@
+        --- a comment line
+        --- another comment
+        -SELECT 1;
+    ",
+    );
+    let map = parse(&mut Cursor::new(diff), git_normalize).unwrap();
+    assert!(map["schema.sql"].deleted, "schema.sql should be deleted");
+}
+
+#[test]
+fn parse_removed_dash_dash_line_in_first_of_two_hunks() {
+    // A `-- comment` removed in an early hunk (not the file's last) must not
+    // derail parsing of the hunks that follow it.
+    let diff = unindent(
+        "
+        --- a/f.sql
+        +++ b/f.sql
+        @@ -1,2 +1,1 @@
+        --- c1
+         keep
+        @@ -10,2 +9,1 @@
+        --- c2
+         keep2
+    ",
+    );
+    let map = parse(&mut Cursor::new(diff), git_normalize).unwrap();
+    let changes = &map["f.sql"];
+    assert!(
+        changes.removed_lines.contains(&1),
+        "hunk 1 removal at line 1"
+    );
+    assert!(
+        changes.removed_lines.contains(&10),
+        "hunk 2 removal at line 10, got: {:?}",
+        changes.removed_lines
+    );
+}
+
+#[test]
+fn parse_added_lines_starting_with_plus_plus() {
+    // Adding a line whose content starts with `++ ` renders as `+++ …`.
+    let diff = unindent(
+        "
+        --- /dev/null
+        +++ b/notes.txt
+        @@ -0,0 +1,2 @@
+        +-- dashes are fine too
+        +++ x
+    ",
+    );
+    let map = parse(&mut Cursor::new(diff), git_normalize).unwrap();
+    let changes = &map["notes.txt"];
+    assert!(changes.added_lines.contains(&1), "line 1 added");
+    assert!(changes.added_lines.contains(&2), "line 2 added");
+}
+
+#[test]
+fn parse_quoted_path_with_octal_escapes() {
+    // git core.quotePath quotes non-ASCII paths, escaping raw bytes in octal:
+    // `für.sql` becomes `"f\303\274r.sql"`.
+    let diff = unindent(
+        "
+        --- \"a/f\\303\\274r.sql\"
+        +++ \"b/f\\303\\274r.sql\"
+        @@ -1 +1 @@
+        -SELECT 1;
+        +SELECT 2;
+    ",
+    );
+    let map = parse(&mut Cursor::new(diff), git_normalize).unwrap();
+    assert!(
+        map.contains_key("für.sql"),
+        "expected unquoted key 'für.sql', got: {:?}",
+        map.keys().collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn parse_header_with_timestamp_metadata() {
+    // GNU diff appends `\t<timestamp>` to header paths; it must be dropped.
+    let diff = unindent(
+        "
+        --- lao\t2002-02-21 23:30:39.942229878 -0800
+        +++ tzu\t2002-02-21 23:30:50.442260588 -0800
+        @@ -1 +1 @@
+        -a
+        +b
+    ",
+    );
+    let map = parse(&mut Cursor::new(diff), str::to_string).unwrap();
+    assert!(
+        map.contains_key("tzu"),
+        "expected metadata-free key 'tzu', got: {:?}",
+        map.keys().collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn parse_blank_context_line_treated_as_context() {
+    // Some tools strip the trailing whitespace that a blank context line
+    // carries; tolerate it like GNU patch does.
+    let diff = "--- a/x.txt\n+++ b/x.txt\n@@ -1,3 +1,4 @@\n one\n\n+two\n three\n";
+    let map = parse(&mut Cursor::new(diff.to_string()), git_normalize).unwrap();
+    assert!(
+        map["x.txt"].added_lines.contains(&3),
+        "line 3 added, got: {:?}",
+        map["x.txt"].added_lines
+    );
+}
+
+#[test]
+fn parse_malformed_diff_errors() {
+    // A `--- ` header with no `+++ ` counterpart can't be a file entry.
+    let diff = "--- a/x\n@@ -1 +1 @@\n-a\n+b\n";
+    let result = parse(&mut Cursor::new(diff.to_string()), str::to_string);
+    assert!(result.is_err(), "expected parse error, got: {result:?}");
+}
+
+#[test]
+fn parse_headers_without_hunks_yield_no_changes() {
+    // A `---`/`+++` pair with no `@@` hunks describes no line changes and
+    // must not produce a ChangeMap entry.
+    let diff = "--- a/x\n+++ b/x\ndiff --git a/y b/y\n";
+    let map = parse(&mut Cursor::new(diff.to_string()), git_normalize).unwrap();
+    assert!(map.is_empty(), "expected no entries, got: {:?}", map.keys());
 }
