@@ -1,9 +1,18 @@
-use std::borrow::Cow;
 use std::collections::HashMap;
 use std::io::Read;
 
+use patchkit::unified::{HunkLine, PlainOrBinaryPatch};
+
 use crate::vcs::{ChangeMap, FileChanges};
 
+/// Parse a unified diff into per-file change sets.
+///
+/// Parsing proper is delegated to the `patchkit` crate, which consumes hunk
+/// bodies by counting lines against the `@@ -a,b +c,d @@` header — so removed
+/// content that renders as `--- …` (e.g. a deleted `-- SQL comment`) can't be
+/// mistaken for the next file's header — and drops sections it can't model
+/// (mode-only changes, pure renames, binary files) as junk.
+///
 /// `normalize` is applied to paths before keying into the `ChangeMap`, so
 /// VCS-specific prefixes (e.g. git's `a/`/`b/`) are stripped at insertion
 /// time and rename collisions merge naturally.
@@ -16,20 +25,25 @@ pub fn parse(
         .read_to_string(&mut raw)
         .map_err(|e| format!("failed to read diff: {e}"))?;
 
-    let content = strip_bodiless_sections(&raw);
-    let content = strip_no_newline_markers(&content);
-
-    if content.trim().is_empty() {
-        return Ok(HashMap::new());
-    }
-
-    let patches =
-        patch::Patch::from_multiple(&content).map_err(|e| format!("failed to parse diff: {e}"))?;
+    let entries =
+        patchkit::unified::parse_patches(raw.split_inclusive('\n').map(|l| l.as_bytes().to_vec()));
     let mut result = HashMap::new();
 
-    for p in patches {
-        let new_path = normalize(&p.new.path);
-        let old_path = normalize(&p.old.path);
+    for entry in entries {
+        let patch = match entry.map_err(|e| format!("failed to parse diff: {e}"))? {
+            PlainOrBinaryPatch::Plain(patch) => patch,
+            // Binary blobs can't carry LINT directives; nothing to track.
+            PlainOrBinaryPatch::Binary(_) => continue,
+        };
+        // A `---`/`+++` pair without hunks describes no line changes.
+        if patch.hunks.is_empty() {
+            continue;
+        }
+
+        // `patchkit` returns header paths verbatim, still carrying git's
+        // `core.quotePath` quoting; decode before normalizing.
+        let new_path = normalize(&unquote_path(&String::from_utf8_lossy(&patch.mod_name)));
+        let old_path = normalize(&unquote_path(&String::from_utf8_lossy(&patch.orig_name)));
 
         // Track deleted files so callers can do reverse-reference lookups.
         if new_path == "/dev/null" {
@@ -49,19 +63,17 @@ pub fn parse(
 
         let mut changes = FileChanges::default();
 
-        for hunk in &p.hunks {
-            let mut old_line = usize::try_from(hunk.old_range.start)
-                .map_err(|_| "diff hunk line number exceeds platform limit".to_string())?;
-            let mut new_line = usize::try_from(hunk.new_range.start)
-                .map_err(|_| "diff hunk line number exceeds platform limit".to_string())?;
+        for hunk in &patch.hunks {
+            let mut old_line = hunk.orig_pos;
+            let mut new_line = hunk.mod_pos;
 
             for line in &hunk.lines {
                 match line {
-                    patch::Line::Add(_) => {
+                    HunkLine::InsertLine(_) => {
                         changes.added_lines.insert(new_line);
                         new_line += 1;
                     }
-                    patch::Line::Remove(_) => {
+                    HunkLine::RemoveLine(_) => {
                         changes.removed_lines.insert(old_line);
                         // Record the *new-file* position where this removal happened.
                         // Because a removal doesn't advance `new_line`, multiple
@@ -73,7 +85,7 @@ pub fn parse(
                         changes.removed_new_positions.insert(new_line);
                         old_line += 1;
                     }
-                    patch::Line::Context(_) => {
+                    HunkLine::ContextLine(_) => {
                         old_line += 1;
                         new_line += 1;
                     }
@@ -107,88 +119,50 @@ pub(crate) fn strip_diff_prefix(path: &str) -> String {
         .to_string()
 }
 
-/// Drop diff sections the unified-diff parser can't model.
-///
-/// `patch::Patch::from_multiple` only parses a file section that carries `@@`
-/// hunks. Git and jj emit several kinds of section that have none:
-///
-/// - binary blobs — a `Binary files a/x and b/x differ` summary, or a
-///   `GIT binary patch` block under `--binary`;
-/// - metadata-only changes — a `chmod` shows up as `old mode`/`new mode`, a
-///   pure rename or copy as `rename from`/`rename to`, and an empty new or
-///   deleted file as a lone `new file mode`/`deleted file mode`.
-///
-/// The parser absorbs a hunkless section as preamble only when another hunked
-/// patch follows it; one trailing the final patch (or standing alone) leaves it
-/// with input it rejects outright, panicking. None of these sections carry
-/// changed `LINT` directive lines, so excising them is lossless for our purposes.
-fn strip_bodiless_sections(content: &str) -> Cow<'_, str> {
-    // `out` stays `None` — and the borrow is returned untouched — until the
-    // first section is dropped, at which point it's seeded with everything kept
-    // so far. Kept lines are reproduced byte-for-byte from the original slice.
-    let mut out: Option<String> = None;
-    let mut flush = |start: usize, end: usize, keep: bool| {
-        if let Some(s) = out.as_mut() {
-            if keep {
-                s.push_str(&content[start..end]);
-            }
-        } else if !keep {
-            out = Some(content[..start].to_string());
-        }
+/// Decode a git C-quoted path (`core.quotePath` escapes special and non-ASCII
+/// bytes); bare paths pass through unchanged. Octal escapes are raw bytes of
+/// the underlying path, so unescaping works at the byte level before decoding
+/// back to UTF-8. The closing quote and anything after it are dropped.
+fn unquote_path(path: &str) -> String {
+    let Some(quoted) = path.strip_prefix('"') else {
+        return path.to_string();
     };
-
-    // A section runs from one `diff --git` line to the next. Content before the
-    // first such line is preamble and is always kept.
-    let mut section_start = 0;
-    let mut pos = 0;
-    let mut in_file_section = false;
-    let mut section_has_hunk = false;
-    for line in content.split_inclusive('\n') {
-        let line_start = pos;
-        pos += line.len();
-        if line.starts_with("diff --git ") {
-            flush(
-                section_start,
-                line_start,
-                !in_file_section || section_has_hunk,
-            );
-            section_start = line_start;
-            in_file_section = true;
-            section_has_hunk = false;
-        } else if line.starts_with("@@ ") {
-            section_has_hunk = true;
+    let mut bytes = Vec::with_capacity(quoted.len());
+    let mut rest = quoted.bytes().peekable();
+    while let Some(byte) = rest.next() {
+        match byte {
+            b'"' => break,
+            b'\\' => {
+                let Some(escaped) = rest.next() else { break };
+                match escaped {
+                    b'a' => bytes.push(0x07),
+                    b'b' => bytes.push(0x08),
+                    b't' => bytes.push(b'\t'),
+                    b'n' => bytes.push(b'\n'),
+                    b'v' => bytes.push(0x0B),
+                    b'f' => bytes.push(0x0C),
+                    b'r' => bytes.push(b'\r'),
+                    b'0'..=b'7' => {
+                        // Octal escapes are at most three digits; a digit right
+                        // after a complete escape is a literal character.
+                        let mut value = u32::from(escaped - b'0');
+                        for _ in 0..2 {
+                            let Some(digit) = rest.next_if(|b| matches!(b, b'0'..=b'7')) else {
+                                break;
+                            };
+                            value = value * 8 + u32::from(digit - b'0');
+                        }
+                        // Git emits exactly one byte per octal escape; saturate
+                        // rather than panic on out-of-range handwritten input.
+                        bytes.push(u8::try_from(value).unwrap_or(u8::MAX));
+                    }
+                    other => bytes.push(other), // `\"`, `\\`, and unknown escapes
+                }
+            }
+            other => bytes.push(other),
         }
     }
-    flush(
-        section_start,
-        content.len(),
-        !in_file_section || section_has_hunk,
-    );
-
-    match out {
-        Some(stripped) => Cow::Owned(stripped),
-        None => Cow::Borrowed(content),
-    }
-}
-
-/// Drop `\ No newline at end of file` markers. The parser tolerates one only at
-/// the very end of a patch, but git emits one mid-hunk whenever a change toggles
-/// the trailing newline of the last line, leaving the parser with the unconsumed
-/// line that follows. The marker is metadata, not file content, so removing it is
-/// lossless for line-number tracking.
-fn strip_no_newline_markers(content: &str) -> Cow<'_, str> {
-    const MARKER: &str = "\\ No newline at end of file";
-    if !content.contains(MARKER) {
-        return Cow::Borrowed(content);
-    }
-
-    let mut out = String::with_capacity(content.len());
-    for line in content.split_inclusive('\n') {
-        if line.trim_end_matches(['\r', '\n']) != MARKER {
-            out.push_str(line);
-        }
-    }
-    Cow::Owned(out)
+    String::from_utf8_lossy(&bytes).into_owned()
 }
 
 fn merge_changes(result: &mut ChangeMap, path: String, changes: FileChanges) {
