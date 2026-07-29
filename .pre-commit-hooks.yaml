@@ -12,10 +12,12 @@
 # pre-commit already sets for pre-push-stage hooks. The guard makes
 # `pre-commit run --hook-stage pre-push --all-files` (no push range) a no-op —
 # the `ifttt-lint` hook covers structural validation in that case.
+# pre-commit appends the user's `args` after the entry; the trailing `--`
+# absorbs `$0` so they land in `$@` and get forwarded to ifttt-lint.
 - id: ifttt-lint-diff
   name: ifttt-lint (diff)
   description: Validate co-changes via LINT.IfChange/ThenChange on push (diff mode, supports NO_IFTTT suppression)
-  entry: sh -c 'if [ -n "${PRE_COMMIT_FROM_REF:-}" ] && [ -n "${PRE_COMMIT_TO_REF:-}" ]; then exec ifttt-lint --diff "${PRE_COMMIT_FROM_REF}..${PRE_COMMIT_TO_REF}"; fi'
+  entry: sh -c 'if [ -n "${PRE_COMMIT_FROM_REF:-}" ] && [ -n "${PRE_COMMIT_TO_REF:-}" ]; then exec ifttt-lint "$@" --diff "${PRE_COMMIT_FROM_REF}..${PRE_COMMIT_TO_REF}"; fi' --
   language: rust
   pass_filenames: false
   always_run: true
