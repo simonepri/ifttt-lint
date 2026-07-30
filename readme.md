@@ -70,6 +70,8 @@ Two hooks serve different purposes:
 
 - **`ifttt-lint-diff`** — runs at every push on all files in the diff range. Checks that co-dependent files are updated together. Supports `NO_IFTTT` suppression via commit messages. Mirrors the `pull_request` GitHub Actions check in intent: diff-based validation with the same suppression mechanism, though the exact git range differs by context.
 
+Both hooks pin `--vcs git`: git hooks only ever fire from git and pass git refs, so in a Jujutsu colocated repo backend auto-detection would otherwise hand those refs to jj as revsets and fail.
+
 ### Install the CLI manually
 
 If you prefer running `ifttt-lint` directly, install it with Cargo:
@@ -291,6 +293,8 @@ ifttt-lint [OPTIONS] [FILES]...
 | `-f, --format <FMT>`     | Output format: `pretty` (default), `json`, `plain`                                                                                               |
 | `--vcs <KIND>`           | VCS backend: `git` or `jj`. Auto-detected from `.jj/` / `.git/` presence if omitted (see [Supported backends](#supported-backends))              |
 
+The `--diff` value is interpreted by the selected backend, so its syntax must match: git refs/ranges for git, jj revsets for jj. Auto-detection prefers jj in colocated repos; pass `--vcs git` to force the git backend.
+
 | Exit Code | Meaning                             |
 | --------- | ----------------------------------- |
 | `0`       | No errors                           |
@@ -304,7 +308,7 @@ ifttt-lint [OPTIONS] [FILES]...
 | Git          | Uses `git diff`, `git log`, `git grep`, `git ls-files`. Requires `git` on `PATH`.                                                              |
 | Jujutsu (jj) | Uses `jj diff --git`, `jj log`, `jj file list`. Multi-pattern fixed-string search runs in-process via `aho-corasick`. Requires `jj` on `PATH`. |
 
-Auto-detected from `.jj/` / `.git/` directory presence in the current working directory or any ancestor (`.jj/` wins on colocated repos). Override with `--vcs=git|jj`.
+Auto-detected from `.jj/` / `.git/` directory presence in the current working directory or any ancestor (`.jj/` wins on colocated repos). Override with `--vcs=git|jj`. In a colocated repo, git-ref ranges like `origin/main..HEAD` fail as jj revsets — pass `--vcs git` to use them.
 
 Need a different backend (Mercurial, Perforce, …)? [Open an issue](../../issues). [#32](../../pull/32) is a worked example of adding one.
 

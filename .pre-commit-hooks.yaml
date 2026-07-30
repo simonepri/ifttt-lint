@@ -1,7 +1,7 @@
 - id: ifttt-lint
   name: ifttt-lint
   description: Enforce atomic cross-file changes via LINT.IfChange/ThenChange directives
-  entry: ifttt-lint
+  entry: ifttt-lint --vcs git
   language: rust
   pass_filenames: true
   stages: [pre-commit]
@@ -14,10 +14,13 @@
 # the `ifttt-lint` hook covers structural validation in that case.
 # pre-commit appends the user's `args` after the entry; the trailing `--`
 # absorbs `$0` so they land in `$@` and get forwarded to ifttt-lint.
+# `--vcs git` pins the backend: hooks only ever run from git (jj doesn't
+# execute git hooks) and pre-commit passes git refs, so auto-detection in jj
+# colocated repos would otherwise feed those refs to jj as revsets (#46).
 - id: ifttt-lint-diff
   name: ifttt-lint (diff)
   description: Validate co-changes via LINT.IfChange/ThenChange on push (diff mode, supports NO_IFTTT suppression)
-  entry: sh -c 'if [ -n "${PRE_COMMIT_FROM_REF:-}" ] && [ -n "${PRE_COMMIT_TO_REF:-}" ]; then exec ifttt-lint "$@" --diff "${PRE_COMMIT_FROM_REF}..${PRE_COMMIT_TO_REF}"; fi' --
+  entry: sh -c 'if [ -n "${PRE_COMMIT_FROM_REF:-}" ] && [ -n "${PRE_COMMIT_TO_REF:-}" ]; then exec ifttt-lint --vcs git "$@" --diff "${PRE_COMMIT_FROM_REF}..${PRE_COMMIT_TO_REF}"; fi' --
   language: rust
   pass_filenames: false
   always_run: true

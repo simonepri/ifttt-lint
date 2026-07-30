@@ -174,6 +174,70 @@ fn diff_skips_symlinks() {
 }
 
 #[parameterized(
+    git_remote_range = { "origin/main..HEAD",  true  },
+    git_three_dot    = { "main...HEAD",        true  },
+    refs_prefix      = { "refs/heads/main..@", true  },
+    open_from        = { "..HEAD",             true  },
+    bare_head        = { "HEAD",               true  },
+    jj_bookmark      = { "main..@",            false },
+    unknown_bookmark = { "zzz..@",             false },
+    remote_bookmark  = { "main@origin..@",     false },
+    slash_bookmark   = { "feat/x@origin..@",   false },
+    revset_function  = { "trunk()..@",         false },
+)]
+fn git_range_hint_detects_git_shaped_revsets(revset: &str, expect_hint: bool) {
+    let hint = git_range_hint(revset);
+    assert_eq!(
+        hint.is_some(),
+        expect_hint,
+        "revset {revset:?} produced hint: {hint:?}"
+    );
+    if let Some(h) = hint {
+        assert!(h.contains(revset), "hint should echo the revset: {h}");
+        assert!(
+            h.contains("--vcs git"),
+            "hint should suggest --vcs git: {h}"
+        );
+    }
+}
+
+#[test]
+fn diff_error_carries_hint_for_git_shaped_range() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo(dir.path());
+
+    let vcs = JjVcsProvider::new(
+        dir.path().to_path_buf(),
+        Some("origin/main..HEAD".into()),
+        true,
+        vec![],
+    );
+    let err = vcs.diff().unwrap_err().to_string();
+    assert!(
+        err.contains("--vcs git"),
+        "error should hint at --vcs git, got: {err}"
+    );
+}
+
+#[test]
+fn diff_error_has_no_hint_for_jj_native_range() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo(dir.path());
+
+    // `nope` cannot resolve: it is neither a bookmark nor a change/commit id
+    // prefix (`e` is not a reverse-hex digit), so jj fails on it. `zzz` would
+    // NOT fail — it is a change-id prefix of the root commit.
+    let vcs = JjVcsProvider::new(
+        dir.path().to_path_buf(),
+        Some("nope..@".into()),
+        true,
+        vec![],
+    );
+    let err = vcs.diff().unwrap_err().to_string();
+    assert!(!err.contains("hint:"), "unexpected hint in error: {err}");
+}
+
+#[parameterized(
     tag_present = { "feat: update\n\nNO_IFTTT=docs follow in next PR", Some("docs follow in next PR") },
     tag_absent  = { "ordinary commit message",                          None                           },
 )]

@@ -154,10 +154,43 @@ fn jj_diff(root: &Path, revset: &str) -> Result<String> {
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("jj diff failed: {stderr}");
+        let hint = git_range_hint(revset)
+            .map(|h| format!("\n{h}"))
+            .unwrap_or_default();
+        anyhow::bail!("jj diff failed: {}{hint}", stderr.trim_end());
     }
 
     String::from_utf8(output.stdout).context("jj diff output is not UTF-8")
+}
+
+/// Returns a hint when a revset that failed looks like a git ref range —
+/// the kind git hooks pass (e.g. `origin/main..HEAD`) — rather than jj
+/// revset syntax.
+fn git_range_hint(revset: &str) -> Option<String> {
+    let (from, to) = revset
+        .rsplit_once("...")
+        .or_else(|| revset.rsplit_once(".."))
+        .unwrap_or((revset, ""));
+    let git_shaped = revset.contains("...") || looks_like_git_ref(from) || looks_like_git_ref(to);
+    git_shaped.then(|| {
+        format!(
+            "hint: '{revset}' looks like a git ref range; \
+             pass --vcs git or use jj revset syntax (e.g. 'main@origin..@')"
+        )
+    })
+}
+
+/// True when a range endpoint reads as a git ref rather than a jj revset.
+/// Deliberately conservative — prefer false negatives over misleading hints:
+/// a slash-path like `feat/x` is also a legal jj bookmark, so only bare
+/// slash-paths carrying no jj-specific syntax qualify.
+fn looks_like_git_ref(endpoint: &str) -> bool {
+    if endpoint == "HEAD" || endpoint.starts_with("refs/") {
+        return true;
+    }
+    endpoint.contains('/')
+        && !endpoint.contains('@')
+        && !endpoint.contains(['(', ')', ':', '&', '|', '~', ' '])
 }
 
 fn parse_no_ifttt_from_commits(root: &Path, revset: &str) -> Option<String> {
