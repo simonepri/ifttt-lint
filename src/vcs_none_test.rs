@@ -1,7 +1,6 @@
 use yare::parameterized;
 
 use super::*;
-use crate::vcs::{FileFilter, FilePattern};
 
 #[parameterized(
     existing_file  = { Some("world\n"), Some("world\n") },
@@ -67,6 +66,30 @@ fn read_file_invalid_utf8_after_probe() {
 }
 
 #[test]
+fn read_file_bytes_serves_undecodable_content() {
+    let dir = tempfile::tempdir().unwrap();
+    // Clean probe window, invalid UTF-8 past it: the strict text read
+    // errors, the byte read returns the raw content.
+    let mut content = vec![b'a'; 8192];
+    content.extend_from_slice(&[0xFF, 0xFE]);
+    std::fs::write(dir.path().join("f.txt"), &content).unwrap();
+
+    let vcs = NoneVcsProvider::new(dir.path().to_path_buf(), true, vec![]);
+    assert!(vcs.read_file("f.txt").is_err());
+    assert_eq!(vcs.read_file_bytes("f.txt").unwrap(), Some(content));
+}
+
+#[test]
+fn read_file_bytes_skips_binary_and_missing() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("bin.dat"), b"LINT.\0tail").unwrap();
+
+    let vcs = NoneVcsProvider::new(dir.path().to_path_buf(), true, vec![]);
+    assert_eq!(vcs.read_file_bytes("bin.dat").unwrap(), None);
+    assert_eq!(vcs.read_file_bytes("absent.txt").unwrap(), None);
+}
+
+#[test]
 fn diff_is_unsupported() {
     let dir = tempfile::tempdir().unwrap();
     let vcs = NoneVcsProvider::new(dir.path().to_path_buf(), true, vec![]);
@@ -84,13 +107,5 @@ fn suppressions_is_unsupported() {
 fn search_string_in_files_is_unsupported() {
     let dir = tempfile::tempdir().unwrap();
     let vcs = NoneVcsProvider::new(dir.path().to_path_buf(), true, vec![]);
-    assert!(vcs
-        .search_string_in_files("LINT.", &FileFilter::all())
-        .is_err());
-    assert!(vcs
-        .search_string_in_files(
-            "LINT.",
-            &FileFilter::any(vec![FilePattern::Contains("x.rs")])
-        )
-        .is_err());
+    assert!(vcs.search_string_in_files("LINT.").is_err());
 }

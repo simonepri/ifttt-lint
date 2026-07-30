@@ -299,14 +299,13 @@ fn run_reverse_lookup_pass(
         return Ok(());
     }
 
-    use crate::vcs::{FileFilter, FilePattern};
-    let filter_patterns: Vec<FilePattern<'_>> = deleted_set
+    let changed_paths: Vec<&str> = deleted_set
         .iter()
         .copied()
         .chain(label_sets.keys().map(String::as_str))
-        .map(FilePattern::Contains)
         .collect();
-    let candidates = vcs.search_string_in_files("LINT.", &FileFilter::any(filter_patterns))?;
+    let directive_files = vcs.search_string_in_files("LINT.")?;
+    let candidates = retain_files_containing_any(directive_files, &changed_paths, vcs)?;
 
     let stale_ctx = StaleReferenceCtx {
         deleted: &deleted_set,
@@ -317,6 +316,32 @@ fn run_reverse_lookup_pass(
         file_list_set: &scope.file_list_set,
     };
     check_stale_references(&stale_ctx, &candidates, cache, result)
+}
+
+/// Keep only the files whose content contains at least one of `patterns`.
+///
+/// Narrowing half of the reverse lookup: the VCS search is a single
+/// needle-only scan, so the many-pattern matching happens here — one
+/// Aho-Corasick pass per file, cost independent of the pattern count.
+/// Matching raw bytes mirrors the byte-level search that surfaced the
+/// candidates, so a file need not be valid UTF-8 to be narrowed. Missing
+/// and binary files cannot yield directive diagnostics and are dropped;
+/// read failures abort the run.
+fn retain_files_containing_any(
+    files: Vec<String>,
+    patterns: &[&str],
+    vcs: &dyn VcsProvider,
+) -> Result<Vec<String>> {
+    let automaton =
+        aho_corasick::AhoCorasick::new(patterns).context("aho-corasick pattern automaton")?;
+    files
+        .into_par_iter()
+        .filter_map(|path| match vcs.read_file_bytes(&path) {
+            Ok(Some(bytes)) => automaton.is_match(&bytes).then_some(Ok(path)),
+            Ok(None) => None,
+            Err(e) => Some(Err(e)),
+        })
+        .collect()
 }
 
 fn sort_result(result: &mut CheckResult) {
@@ -1068,7 +1093,7 @@ struct StaleReferenceCtx<'a> {
 }
 
 /// Find surviving files whose ThenChange targets reference a deleted file
-/// or a stale label. Candidates are pre-filtered by `search_files` to only
+/// or a stale label. Candidates are pre-filtered by the caller to only
 /// include files containing both `LINT.` and a relevant target path.
 fn check_stale_references(
     ctx: &StaleReferenceCtx<'_>,
@@ -1172,7 +1197,8 @@ fn stale_reference_scan_input(
         return Ok(Some((build_pairs(&parsed.directives), None)));
     }
 
-    // Candidates were pre-filtered by search_files — no content check needed.
+    // Candidates were pre-filtered by retain_files_containing_any — no
+    // content check needed.
     let content = match ctx.vcs.read_file(rel_str)? {
         Some(FileContent::Text(c)) => c,
         _ => return Ok(None),

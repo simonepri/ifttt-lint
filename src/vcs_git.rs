@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 
 use crate::udiff;
-use crate::vcs::{ChangeMap, FileContent, FileFilter, VcsProvider};
+use crate::vcs::{ChangeMap, FileContent, VcsProvider};
 use crate::vcs_none::{
     absolute_path, is_glob_pattern, is_symlink, normalize_input_path, NoneVcsProvider,
 };
@@ -78,6 +78,10 @@ impl VcsProvider for GitVcsProvider {
         self.inner.read_file(rel_path)
     }
 
+    fn read_file_bytes(&self, rel_path: &str) -> Result<Option<Vec<u8>>> {
+        self.inner.read_file_bytes(rel_path)
+    }
+
     fn file_exists(&self, rel_path: &str) -> Result<bool> {
         self.inner.file_exists(rel_path)
     }
@@ -94,43 +98,9 @@ impl VcsProvider for GitVcsProvider {
         self.inner.validate_files()
     }
 
-    fn search_string_in_files(&self, needle: &str, filter: &FileFilter<'_>) -> Result<Vec<String>> {
-        if filter.is_empty() {
-            return self.run_git_grep(needle, None);
-        }
-
-        let mut seen = std::collections::HashSet::new();
-        let mut result = Vec::new();
-        for pattern in filter.patterns() {
-            // We need `needle AND (pattern1 OR pattern2 ...)`.
-            // `git grep --all-match` can express `needle AND pattern`,
-            // so union one grep per pattern rather than collapsing the
-            // filter into `needle AND pattern1 AND pattern2 ...`.
-            for path in self.run_git_grep(needle, Some(pattern.as_str()))? {
-                if !seen.insert(path.clone()) {
-                    continue;
-                }
-                result.push(path);
-            }
-        }
-        Ok(result)
-    }
-}
-
-impl GitVcsProvider {
-    /// Run a single `git grep` call for `needle`, optionally intersected with
-    /// one additional literal pattern.
-    fn run_git_grep(&self, needle: &str, pattern: Option<&str>) -> Result<Vec<String>> {
-        let mut args: Vec<String> = vec!["grep".into(), "-rl".into(), "--fixed-strings".into()];
-        args.extend(["-e".into(), needle.to_string()]);
-
-        if let Some(pattern) = pattern {
-            args.push("--all-match".into());
-            args.extend(["-e".into(), pattern.to_string()]);
-        }
-
+    fn search_string_in_files(&self, needle: &str) -> Result<Vec<String>> {
         let output = std::process::Command::new("git")
-            .args(&args)
+            .args(["grep", "-rl", "--fixed-strings", "-e", needle])
             .current_dir(self.inner.root())
             .output()
             .context("git grep")?;

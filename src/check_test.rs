@@ -2128,6 +2128,138 @@ fn reverse_lookup_parse_errors_suppressed() {
     );
 }
 
+// The reverse lookup's narrowing helper: the VCS search is needle-only, so
+// this decides in memory which directive files reference the diff.
+
+#[test]
+fn retain_files_keeps_only_pattern_matches() {
+    let mut mock = MockVcsProvider::default();
+    mock.add_file("a.txt", "LINT.\n//x.rs\n");
+    mock.add_file("b.txt", "LINT.\n//y.rs\n");
+    mock.add_file("c.txt", "LINT.\n//z.rs\n");
+
+    let files = vec![
+        "a.txt".to_string(),
+        "b.txt".to_string(),
+        "c.txt".to_string(),
+    ];
+    let mut kept = retain_files_containing_any(files, &["x.rs", "y.rs"], &mock).unwrap();
+    kept.sort();
+    assert_eq!(kept, vec!["a.txt".to_string(), "b.txt".to_string()]);
+}
+
+#[test]
+fn retain_files_drops_binary_and_missing() {
+    let mut mock = MockVcsProvider::default();
+    // NUL byte → the mock's read_file reports Binary, mirroring real backends.
+    mock.add_file("bin.dat", "LINT. //x.rs \0 tail");
+    // "gone.txt" is never added — read_file returns None.
+
+    let files = vec!["bin.dat".to_string(), "gone.txt".to_string()];
+    let kept = retain_files_containing_any(files, &["x.rs"], &mock).unwrap();
+    assert!(
+        kept.is_empty(),
+        "binary and missing candidates must be dropped; got: {kept:?}"
+    );
+}
+
+/// A pattern that overlaps the search needle (`LINT.` vs `LINT.IfChange`)
+/// must still match: the automaton holds only the caller's patterns —
+/// folding the needle into it would let a needle hit mask an overlapping
+/// pattern hit.
+#[test]
+fn retain_files_pattern_overlapping_needle_still_hits() {
+    let mut mock = MockVcsProvider::default();
+    mock.add_file("a.txt", "LINT.IfChange\n");
+
+    let kept =
+        retain_files_containing_any(vec!["a.txt".to_string()], &["LINT.IfChange"], &mock).unwrap();
+    assert_eq!(kept, vec!["a.txt".to_string()]);
+}
+
+/// Content that is not valid UTF-8 narrows byte-level like the search that
+/// surfaced it: kept when it holds a changed path, dropped when it does not.
+#[test]
+fn retain_files_matches_undecodable_content_by_bytes() {
+    let mut mock = MockVcsProvider::default();
+    // Clean probe window, invalid UTF-8 past it: the strict text read
+    // errors on this file, but the byte read serves it.
+    let mut bytes = b"LINT. //x.rs ".to_vec();
+    bytes.resize(crate::vcs_none::BINARY_PROBE_BYTES + 1, b'a');
+    bytes.push(0xFF);
+    mock.add_file_bytes("legacy.txt", &bytes);
+    let files = vec!["legacy.txt".to_string()];
+
+    let kept = retain_files_containing_any(files.clone(), &["x.rs"], &mock).unwrap();
+    assert_eq!(kept, vec!["legacy.txt".to_string()]);
+
+    let kept = retain_files_containing_any(files, &["y.rs"], &mock).unwrap();
+    assert!(
+        kept.is_empty(),
+        "a non-referencing undecodable file must be dropped, not abort; got: {kept:?}"
+    );
+}
+
+/// Wraps the mock so reads fail for one path, modeling an I/O failure
+/// between the VCS search and the narrowing read.
+struct FailingReadVcs {
+    inner: MockVcsProvider,
+    fail_path: &'static str,
+}
+
+impl VcsProvider for FailingReadVcs {
+    fn diff(&self) -> Result<ChangeMap> {
+        self.inner.diff()
+    }
+    fn suppressions(&self) -> Result<Option<String>> {
+        self.inner.suppressions()
+    }
+    fn read_file(&self, rel_path: &str) -> Result<Option<FileContent>> {
+        if rel_path == self.fail_path {
+            anyhow::bail!("read {rel_path}: input/output error");
+        }
+        self.inner.read_file(rel_path)
+    }
+    fn read_file_bytes(&self, rel_path: &str) -> Result<Option<Vec<u8>>> {
+        if rel_path == self.fail_path {
+            anyhow::bail!("read {rel_path}: input/output error");
+        }
+        self.inner.read_file_bytes(rel_path)
+    }
+    fn file_exists(&self, rel_path: &str) -> Result<bool> {
+        self.inner.file_exists(rel_path)
+    }
+    fn search_string_in_files(&self, needle: &str) -> Result<Vec<String>> {
+        self.inner.search_string_in_files(needle)
+    }
+    fn validate_files(&self) -> &[String] {
+        self.inner.validate_files()
+    }
+}
+
+/// A read failure aborts the run: a clean report must mean every
+/// directive-containing file was checked.
+#[test]
+fn retain_files_errors_on_failing_read() {
+    let mut mock = MockVcsProvider::default();
+    mock.add_file("ok.txt", "LINT.\n//x.rs\n");
+    let vcs = FailingReadVcs {
+        inner: mock,
+        fail_path: "weird.txt",
+    };
+
+    let err = retain_files_containing_any(
+        vec!["weird.txt".to_string(), "ok.txt".to_string()],
+        &["x.rs"],
+        &vcs,
+    )
+    .unwrap_err();
+    assert!(
+        err.to_string().contains("weird.txt"),
+        "the error must name the failing file; got: {err:#}"
+    );
+}
+
 // Bare filenames resolve relative to the source file's directory.
 
 #[parameterized(

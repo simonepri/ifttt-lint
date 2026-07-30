@@ -3,7 +3,6 @@ use std::path::Path;
 use yare::parameterized;
 
 use super::*;
-use crate::vcs::{FileFilter, FilePattern};
 
 /// Minimal user config so `git commit` succeeds in CI / sandboxed environments.
 fn init_repo(dir: &Path) {
@@ -75,38 +74,9 @@ fn search_files_lint(files: &[(&str, &str)], expected: &[&str]) {
     git_add_commit(dir.path(), "init");
 
     let vcs = GitVcsProvider::new(dir.path().to_path_buf(), None, true, vec![]);
-    let mut found = vcs
-        .search_string_in_files("LINT.", &FileFilter::all())
-        .unwrap();
+    let mut found = vcs.search_string_in_files("LINT.").unwrap();
     found.sort();
     assert_eq!(found.as_slice(), expected);
-}
-
-#[test]
-fn search_files_filter_any_uses_or_semantics() {
-    let dir = tempfile::tempdir().unwrap();
-    init_repo(dir.path());
-    for (name, content) in [
-        ("a.txt", "LINT.\n//x.rs\n"),
-        ("b.txt", "LINT.\n//y.rs\n"),
-        ("c.txt", "LINT.\n//z.rs\n"),
-    ] {
-        std::fs::write(dir.path().join(name), content).unwrap();
-    }
-    git_add_commit(dir.path(), "init");
-
-    let vcs = GitVcsProvider::new(dir.path().to_path_buf(), None, true, vec![]);
-    let mut found = vcs
-        .search_string_in_files(
-            "LINT.",
-            &FileFilter::any(vec![
-                FilePattern::Contains("x.rs"),
-                FilePattern::Contains("y.rs"),
-            ]),
-        )
-        .unwrap();
-    found.sort();
-    assert_eq!(found, vec!["a.txt", "b.txt"]);
 }
 
 #[test]

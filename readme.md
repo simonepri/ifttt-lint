@@ -515,7 +515,7 @@ When you can, you absolutely should. `IfChange`/`ThenChange` is for the gaps tha
 
 ### Is this fast enough for large codebases?
 
-Yes. `ifttt-lint` is designed so the common case stays local and the worst case stays filtered — the linter reads only the changed files plus referenced targets. A single `git grep` runs when a target file is deleted or a label is renamed, narrowed by cheap literal filters and respecting `.gitignore`.
+Yes. `ifttt-lint` is designed so the common case stays local and the worst case stays filtered — the linter reads only the changed files plus referenced targets. When a target file is deleted or a label is renamed, a single needle-only `git grep` (respecting `.gitignore`) lists the directive-containing files, and the few hits are matched against the changed paths in memory — so runtime stays flat no matter how many files the diff touches.
 
 Real-world (structural validation, M-series MacBook, 2 threads):
 

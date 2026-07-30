@@ -7,18 +7,16 @@ use anyhow::{Context, Result};
 use rayon::prelude::*;
 
 use crate::udiff;
-use crate::vcs::{ChangeMap, FileContent, FileFilter, VcsProvider};
+use crate::vcs::{ChangeMap, FileContent, VcsProvider};
 use crate::vcs_none::{
-    absolute_path, is_glob_pattern, is_symlink, normalize_input_path, NoneVcsProvider,
+    absolute_path, is_glob_pattern, is_symlink, normalize_input_path, probe_is_binary,
+    NoneVcsProvider, BINARY_PROBE_BYTES,
 };
 
-/// Probe size for binary detection — matches `vcs_none::read_file`'s heuristic.
-const BINARY_PROBE_BYTES: usize = 8192;
-
-/// Read a file's contents, returning `None` for files that look binary
-/// (NUL byte or invalid UTF-8 in the first `BINARY_PROBE_BYTES`) or are
-/// missing/unreadable. Probes before allocating to bound peak memory under
-/// parallel walks: a multi-gigabyte binary blob doesn't get fully read.
+/// Read a file's contents, returning `None` for files that look binary or
+/// are missing/unreadable. Probes before allocating to bound peak memory
+/// under parallel walks: a multi-gigabyte binary blob doesn't get fully
+/// read.
 ///
 /// Mid-file read errors are intentionally coerced to `None` — search is
 /// best-effort across the working copy and a single transient I/O failure
@@ -29,7 +27,7 @@ fn read_text_or_skip(path: &Path) -> Option<Vec<u8>> {
     let mut probe = [0u8; BINARY_PROBE_BYTES];
     let n = file.read(&mut probe).ok()?;
     let head = &probe[..n];
-    if head.contains(&0) || std::str::from_utf8(head).is_err_and(|e| e.error_len().is_some()) {
+    if probe_is_binary(head) {
         return None;
     }
     let mut buf = Vec::from(head);
@@ -99,6 +97,10 @@ impl VcsProvider for JjVcsProvider {
         self.inner.read_file(rel_path)
     }
 
+    fn read_file_bytes(&self, rel_path: &str) -> Result<Option<Vec<u8>>> {
+        self.inner.read_file_bytes(rel_path)
+    }
+
     fn file_exists(&self, rel_path: &str) -> Result<bool> {
         self.inner.file_exists(rel_path)
     }
@@ -115,29 +117,14 @@ impl VcsProvider for JjVcsProvider {
         self.inner.validate_files()
     }
 
-    fn search_string_in_files(&self, needle: &str, filter: &FileFilter<'_>) -> Result<Vec<String>> {
+    fn search_string_in_files(&self, needle: &str) -> Result<Vec<String>> {
         let files = jj_file_list(self.inner.root())?;
 
-        // Needle and filter are logically distinct (`needle AND (any of
-        // filter)`), so two automata keeps the AND/OR split clean: merging
-        // them into one OR'd automaton would collapse the semantics.
         let needle_ac = AhoCorasick::builder()
             .ascii_case_insensitive(false)
             .match_kind(MatchKind::Standard)
             .build([needle])
             .context("aho-corasick needle automaton")?;
-        let filter_ac = if filter.is_empty() {
-            None
-        } else {
-            let pats: Vec<&str> = filter.patterns().iter().map(|p| p.as_str()).collect();
-            Some(
-                AhoCorasick::builder()
-                    .ascii_case_insensitive(false)
-                    .match_kind(MatchKind::Standard)
-                    .build(&pats)
-                    .context("aho-corasick filter automaton")?,
-            )
-        };
 
         let root = self.inner.root().to_path_buf();
 
@@ -150,15 +137,7 @@ impl VcsProvider for JjVcsProvider {
                     return None;
                 }
                 let content = read_text_or_skip(&abs)?;
-                if !needle_ac.is_match(&content) {
-                    return None;
-                }
-                if let Some(ac) = &filter_ac {
-                    if !ac.is_match(&content) {
-                        return None;
-                    }
-                }
-                Some(rel_path.clone())
+                needle_ac.is_match(&content).then(|| rel_path.clone())
             })
             .collect();
         results.sort();

@@ -2,11 +2,14 @@ use std::collections::HashMap;
 
 use anyhow::Result;
 
-use crate::vcs::{ChangeMap, FileContent, FileFilter, VcsProvider};
+use crate::vcs::{ChangeMap, FileContent, VcsProvider};
+use crate::vcs_none::{probe_is_binary, BINARY_PROBE_BYTES};
 
-/// In-memory VcsProvider for tests.
+/// In-memory VcsProvider for tests. Stores raw bytes and classifies them on
+/// read with the same probe as the real backends, so undecodable and binary
+/// content behave faithfully.
 pub struct MockVcsProvider {
-    files: HashMap<String, String>,
+    files: HashMap<String, Vec<u8>>,
     diff: ChangeMap,
     suppression: Option<String>,
     validate_files: Vec<String>,
@@ -27,7 +30,11 @@ impl Default for MockVcsProvider {
 
 impl MockVcsProvider {
     pub fn add_file(&mut self, rel_path: &str, content: &str) {
-        self.files.insert(rel_path.to_string(), content.to_string());
+        self.add_file_bytes(rel_path, content.as_bytes());
+    }
+
+    pub fn add_file_bytes(&mut self, rel_path: &str, content: &[u8]) {
+        self.files.insert(rel_path.to_string(), content.to_vec());
     }
 
     pub fn set_diff(&mut self, diff: ChangeMap) {
@@ -57,13 +64,23 @@ impl VcsProvider for MockVcsProvider {
     }
 
     fn read_file(&self, rel_path: &str) -> Result<Option<FileContent>> {
-        Ok(self.files.get(rel_path).map(|content| {
-            if content.as_bytes().iter().take(8192).any(|&b| b == 0) {
-                FileContent::Binary
-            } else {
-                FileContent::Text(content.clone())
-            }
-        }))
+        let Some(bytes) = self.files.get(rel_path) else {
+            return Ok(None);
+        };
+        if probe_is_binary(probe_head(bytes)) {
+            return Ok(Some(FileContent::Binary));
+        }
+        let text = String::from_utf8(bytes.clone())
+            .map_err(|e| anyhow::anyhow!(e).context(format!("read {rel_path}")))?;
+        Ok(Some(FileContent::Text(text)))
+    }
+
+    fn read_file_bytes(&self, rel_path: &str) -> Result<Option<Vec<u8>>> {
+        Ok(self
+            .files
+            .get(rel_path)
+            .filter(|bytes| !probe_is_binary(probe_head(bytes)))
+            .cloned())
     }
 
     fn file_exists(&self, rel_path: &str) -> Result<bool> {
@@ -86,19 +103,26 @@ impl VcsProvider for MockVcsProvider {
         &self.validate_files
     }
 
-    /// NOTE: This scans every file linearly and calls `filter.matches()` per
-    /// file (which itself is O(patterns)). The real git backend delegates to
-    /// `git grep` which uses Aho-Corasick internally, so it handles large
-    /// pattern sets much more efficiently. Don't benchmark this path if you
-    /// care about `search_string_in_files` performance.
-    fn search_string_in_files(&self, needle: &str, filter: &FileFilter<'_>) -> Result<Vec<String>> {
+    fn search_string_in_files(&self, needle: &str) -> Result<Vec<String>> {
         let mut paths: Vec<String> = self
             .files
             .iter()
-            .filter(|(_path, content)| content.contains(needle) && filter.matches(content))
+            .filter(|(_path, bytes)| {
+                // Empty-needle guard: `windows(0)` panics, while an empty
+                // pattern matches everything (as in `str::contains`).
+                needle.is_empty()
+                    || bytes
+                        .windows(needle.len())
+                        .any(|window| window == needle.as_bytes())
+            })
             .map(|(path, _)| path.clone())
             .collect();
         paths.sort();
         Ok(paths)
     }
+}
+
+/// The probe window of `bytes` — the whole content when shorter.
+fn probe_head(bytes: &[u8]) -> &[u8] {
+    &bytes[..bytes.len().min(BINARY_PROBE_BYTES)]
 }
