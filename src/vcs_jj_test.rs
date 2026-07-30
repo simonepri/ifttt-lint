@@ -4,7 +4,6 @@ use std::process::Stdio;
 use yare::parameterized;
 
 use super::*;
-use crate::vcs::{FileFilter, FilePattern};
 
 fn jj(dir: &Path, args: &[&str]) {
     let status = std::process::Command::new("jj")
@@ -72,9 +71,7 @@ fn search_files_lint_finds_matching() {
     std::fs::write(dir.path().join("b.txt"), "nothing\n").unwrap();
 
     let vcs = JjVcsProvider::new(dir.path().to_path_buf(), None, true, vec![]);
-    let mut found = vcs
-        .search_string_in_files("LINT.", &FileFilter::all())
-        .unwrap();
+    let mut found = vcs.search_string_in_files("LINT.").unwrap();
     found.sort();
     assert_eq!(found, vec!["a.txt".to_string()]);
 }
@@ -86,60 +83,8 @@ fn search_files_lint_empty_when_no_match() {
     std::fs::write(dir.path().join("x.txt"), "nothing\n").unwrap();
 
     let vcs = JjVcsProvider::new(dir.path().to_path_buf(), None, true, vec![]);
-    let found = vcs
-        .search_string_in_files("LINT.", &FileFilter::all())
-        .unwrap();
+    let found = vcs.search_string_in_files("LINT.").unwrap();
     assert!(found.is_empty(), "expected no matches, got: {found:?}");
-}
-
-#[test]
-fn search_files_filter_any_uses_or_semantics() {
-    let dir = tempfile::tempdir().unwrap();
-    init_repo(dir.path());
-    for (name, content) in [
-        ("a.txt", "LINT.\n//x.rs\n"),
-        ("b.txt", "LINT.\n//y.rs\n"),
-        ("c.txt", "LINT.\n//z.rs\n"),
-    ] {
-        std::fs::write(dir.path().join(name), content).unwrap();
-    }
-
-    let vcs = JjVcsProvider::new(dir.path().to_path_buf(), None, true, vec![]);
-    let mut found = vcs
-        .search_string_in_files(
-            "LINT.",
-            &FileFilter::any(vec![
-                FilePattern::Contains("x.rs"),
-                FilePattern::Contains("y.rs"),
-            ]),
-        )
-        .unwrap();
-    found.sort();
-    assert_eq!(found, vec!["a.txt".to_string(), "b.txt".to_string()]);
-}
-
-/// Locks in the two-automaton design: if anyone collapses needle + filter
-/// into a single combined automaton, `MatchKind::Standard`'s non-overlapping
-/// advance will commit the needle hit at byte 0 and skip past the overlapping
-/// filter pattern, dropping this file from the result set.
-#[test]
-fn search_files_filter_pattern_with_needle_prefix_still_hits() {
-    let dir = tempfile::tempdir().unwrap();
-    init_repo(dir.path());
-    std::fs::write(dir.path().join("a.txt"), "LINT.IfChange\n").unwrap();
-
-    let vcs = JjVcsProvider::new(dir.path().to_path_buf(), None, true, vec![]);
-    let found = vcs
-        .search_string_in_files(
-            "LINT.",
-            &FileFilter::any(vec![FilePattern::Contains("LINT.IfChange")]),
-        )
-        .unwrap();
-    assert_eq!(
-        found,
-        vec!["a.txt".to_string()],
-        "filter pattern overlapping the needle must still match"
-    );
 }
 
 #[test]
@@ -155,9 +100,7 @@ fn search_files_skips_binary() {
     std::fs::write(dir.path().join("text.txt"), "LINT.IfChange\n").unwrap();
 
     let vcs = JjVcsProvider::new(dir.path().to_path_buf(), None, true, vec![]);
-    let found = vcs
-        .search_string_in_files("LINT.", &FileFilter::all())
-        .unwrap();
+    let found = vcs.search_string_in_files("LINT.").unwrap();
     assert_eq!(
         found,
         vec!["text.txt".to_string()],
@@ -176,9 +119,7 @@ fn search_files_skips_symlinks() {
     std::os::unix::fs::symlink("LINT.IfChange", dir.path().join("link.txt")).unwrap();
 
     let vcs = JjVcsProvider::new(dir.path().to_path_buf(), None, true, vec![]);
-    let found = vcs
-        .search_string_in_files("LINT.", &FileFilter::all())
-        .unwrap();
+    let found = vcs.search_string_in_files("LINT.").unwrap();
     assert_eq!(
         found,
         vec!["real.txt".to_string()],

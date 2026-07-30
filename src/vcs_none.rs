@@ -2,7 +2,7 @@ use std::path::{Component, Path, PathBuf};
 
 use anyhow::Result;
 
-use crate::vcs::{ChangeMap, FileContent, FileFilter, VcsProvider};
+use crate::vcs::{ChangeMap, FileContent, VcsProvider};
 
 pub(crate) fn absolute_path(root: &Path, path: &Path) -> PathBuf {
     if path.is_absolute() {
@@ -116,33 +116,22 @@ impl VcsProvider for NoneVcsProvider {
     }
 
     fn read_file(&self, rel_path: &str) -> Result<Option<FileContent>> {
-        use std::io::Read;
-        let abs = self.root.join(rel_path);
-        if abs.metadata().is_ok_and(|m| m.is_dir()) {
-            anyhow::bail!("{rel_path} is a directory");
-        }
-        let mut file = match std::fs::File::open(&abs) {
-            Ok(f) => f,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(e) if e.kind() == std::io::ErrorKind::IsADirectory => {
-                anyhow::bail!("{rel_path} is a directory")
+        match self.read_probed(rel_path)? {
+            None => Ok(None),
+            Some(ProbedRead::Binary) => Ok(Some(FileContent::Binary)),
+            Some(ProbedRead::Bytes(buf)) => {
+                let text = String::from_utf8(buf)
+                    .map_err(|e| anyhow::anyhow!(e).context(format!("read {rel_path}")))?;
+                Ok(Some(FileContent::Text(text)))
             }
-            Err(e) => return Err(anyhow::anyhow!(e).context(format!("read {rel_path}"))),
-        };
-        let mut probe = [0u8; 8192];
-        let n = file
-            .read(&mut probe)
-            .map_err(|e| anyhow::anyhow!(e).context(format!("read {rel_path}")))?;
-        let head = &probe[..n];
-        if head.contains(&0) || std::str::from_utf8(head).is_err_and(|e| e.error_len().is_some()) {
-            return Ok(Some(FileContent::Binary));
         }
-        let mut buf = Vec::from(head);
-        file.read_to_end(&mut buf)
-            .map_err(|e| anyhow::anyhow!(e).context(format!("read {rel_path}")))?;
-        let text = String::from_utf8(buf)
-            .map_err(|e| anyhow::anyhow!(e).context(format!("read {rel_path}")))?;
-        Ok(Some(FileContent::Text(text)))
+    }
+
+    fn read_file_bytes(&self, rel_path: &str) -> Result<Option<Vec<u8>>> {
+        Ok(match self.read_probed(rel_path)? {
+            Some(ProbedRead::Bytes(buf)) => Some(buf),
+            Some(ProbedRead::Binary) | None => None,
+        })
     }
 
     fn file_exists(&self, rel_path: &str) -> Result<bool> {
@@ -150,11 +139,7 @@ impl VcsProvider for NoneVcsProvider {
         Ok(abs.metadata().is_ok_and(|m| m.is_file()))
     }
 
-    fn search_string_in_files(
-        &self,
-        _needle: &str,
-        _filter: &FileFilter<'_>,
-    ) -> Result<Vec<String>> {
+    fn search_string_in_files(&self, _needle: &str) -> Result<Vec<String>> {
         anyhow::bail!(
             "search_string_in_files is not supported by NoneVcsProvider — needs a VCS backend"
         )
@@ -175,6 +160,57 @@ impl VcsProvider for NoneVcsProvider {
     fn validate_files(&self) -> &[String] {
         &self.files
     }
+}
+
+/// Result of a probed raw read: the binary probe ran, the content did not
+/// go through UTF-8 decoding.
+enum ProbedRead {
+    /// NUL byte or invalid UTF-8 within the probe window.
+    Binary,
+    Bytes(Vec<u8>),
+}
+
+impl NoneVcsProvider {
+    /// Open, probe the first [`BINARY_PROBE_BYTES`], and read the rest raw.
+    /// `None` = file does not exist. Probing before allocating bounds peak
+    /// memory: a multi-gigabyte binary blob is never fully read.
+    fn read_probed(&self, rel_path: &str) -> Result<Option<ProbedRead>> {
+        use std::io::Read;
+        let abs = self.root.join(rel_path);
+        if abs.metadata().is_ok_and(|m| m.is_dir()) {
+            anyhow::bail!("{rel_path} is a directory");
+        }
+        let mut file = match std::fs::File::open(&abs) {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) if e.kind() == std::io::ErrorKind::IsADirectory => {
+                anyhow::bail!("{rel_path} is a directory")
+            }
+            Err(e) => return Err(anyhow::anyhow!(e).context(format!("read {rel_path}"))),
+        };
+        let mut probe = [0u8; BINARY_PROBE_BYTES];
+        let n = file
+            .read(&mut probe)
+            .map_err(|e| anyhow::anyhow!(e).context(format!("read {rel_path}")))?;
+        let head = &probe[..n];
+        if probe_is_binary(head) {
+            return Ok(Some(ProbedRead::Binary));
+        }
+        let mut buf = Vec::from(head);
+        file.read_to_end(&mut buf)
+            .map_err(|e| anyhow::anyhow!(e).context(format!("read {rel_path}")))?;
+        Ok(Some(ProbedRead::Bytes(buf)))
+    }
+}
+
+/// Size of the binary-detection probe at the start of every file read.
+pub(crate) const BINARY_PROBE_BYTES: usize = 8192;
+
+/// Binary heuristic shared by every backend's reads: a NUL byte, or invalid
+/// UTF-8 that is not merely a multi-byte character cut off by the probe
+/// boundary.
+pub(crate) fn probe_is_binary(head: &[u8]) -> bool {
+    head.contains(&0) || std::str::from_utf8(head).is_err_and(|e| e.error_len().is_some())
 }
 
 #[cfg(test)]
