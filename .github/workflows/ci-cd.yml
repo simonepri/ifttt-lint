@@ -7,12 +7,15 @@
 #   2. Creates or updates a release PR that bumps the version in Cargo.toml and updates the changelog.
 #   3. If a version is already tagged and ready (from a previously merged release PR), publishes to
 #      crates.io and creates a GitHub Release.
-#   4. If step 3 released, upload-binaries attaches prebuilt linux and macOS binaries to that release.
+#   4. If step 3 released, binaries attaches prebuilt linux and macOS archives to that release.
 #
 # The binaries are built in this same run rather than in a tag-triggered workflow because release-plz
 # tags with GITHUB_TOKEN, and GitHub does not fire workflow events for GITHUB_TOKEN actions — so
 # `on: push: tags:` would never start. Gating on the release job's output keeps this working without
 # a PAT or GitHub App token.
+#
+# On PRs the same job runs in dry-run mode: it builds and packs every target but uploads nothing.
+# That proves the release path still works before merging, and covers targets `test` never builds.
 #
 # The only manual step is merging the release PR — everything else is automatic.
 #
@@ -86,8 +89,7 @@ jobs:
       contents: write
       pull-requests: write
     outputs:
-      released: ${{ steps.release.outputs.releases_created }}
-      releases: ${{ steps.release.outputs.releases }}
+      tag: ${{ steps.tag.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -133,12 +135,22 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+      # Empty when nothing was released, which is what gates the binaries job below.
+      - name: Read released tag
+        id: tag
+        if: steps.release.outputs.releases_created == 'true'
+        env:
+          RELEASES: ${{ steps.release.outputs.releases }}
+        run: echo "tag=$(echo "$RELEASES" | jq -r '.[0].tag')" >> "$GITHUB_OUTPUT"
 
-  upload-binaries:
-    name: Upload ${{ matrix.target }}
+  binaries:
+    name: Binaries ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
     needs: release
-    if: needs.release.outputs.released == 'true'
+    # `release` is skipped on PRs, so this needs !cancelled() to run at all there.
+    if: >-
+      !cancelled()
+      && (needs.release.outputs.tag != '' || github.event_name == 'pull_request')
     permissions:
       contents: write
     strategy:
@@ -160,7 +172,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: refs/tags/${{ fromJSON(needs.release.outputs.releases)[0].tag }}
+          # Release runs build the new tag; PR dry runs build the PR itself.
+          ref: ${{ needs.release.outputs.tag || github.sha }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -170,4 +183,7 @@ jobs:
           target: ${{ matrix.target }}
           locked: true
           checksum: sha256
-          ref: refs/tags/${{ fromJSON(needs.release.outputs.releases)[0].tag }}
+          ref: ${{ needs.release.outputs.tag && format('refs/tags/{0}', needs.release.outputs.tag) || '' }}
+          # Without a tag there is nothing to upload to, so build and pack only.
+          dry-run: ${{ needs.release.outputs.tag == '' }}
+          dry-run-intended: ${{ needs.release.outputs.tag == '' }}
