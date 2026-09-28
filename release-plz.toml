@@ -1,2 +1,6 @@
 [workspace]
 changelog_update = false
+# GitHub freezes a release's assets the moment it is published (immutable releases), so the
+# binaries job has nothing to upload to unless the release is still a draft. publish-release
+# flips it once every archive is attached.
+git_release_draft = true
