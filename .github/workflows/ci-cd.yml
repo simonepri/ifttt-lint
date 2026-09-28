@@ -7,6 +7,12 @@
 #   2. Creates or updates a release PR that bumps the version in Cargo.toml and updates the changelog.
 #   3. If a version is already tagged and ready (from a previously merged release PR), publishes to
 #      crates.io and creates a GitHub Release.
+#   4. If step 3 released, upload-binaries attaches prebuilt linux and macOS binaries to that release.
+#
+# The binaries are built in this same run rather than in a tag-triggered workflow because release-plz
+# tags with GITHUB_TOKEN, and GitHub does not fire workflow events for GITHUB_TOKEN actions — so
+# `on: push: tags:` would never start. Gating on the release job's output keeps this working without
+# a PAT or GitHub App token.
 #
 # The only manual step is merging the release PR — everything else is automatic.
 #
@@ -79,6 +85,9 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+    outputs:
+      released: ${{ steps.release.outputs.releases_created }}
+      releases: ${{ steps.release.outputs.releases }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -118,8 +127,47 @@ jobs:
         with:
           fetch-depth: 0
       - uses: release-plz/action@v0.5
+        id: release
         with:
           command: release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  upload-binaries:
+    name: Upload ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    needs: release
+    if: needs.release.outputs.released == 'true'
+    permissions:
+      contents: write
+    strategy:
+      # The crate is already published by this point, so a single broken target
+      # should still leave every other archive attached to the release.
+      fail-fast: false
+      matrix:
+        include:
+          # Every target builds natively — ubuntu-*-arm and macOS runners avoid
+          # needing a cross linker. ubuntu-22.04 sets the glibc floor at 2.35.
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-22.04-arm
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          - target: aarch64-apple-darwin
+            os: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ fromJSON(needs.release.outputs.releases)[0].tag }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: taiki-e/upload-rust-binary-action@v1
+        with:
+          bin: ifttt-lint
+          target: ${{ matrix.target }}
+          locked: true
+          checksum: sha256
+          ref: refs/tags/${{ fromJSON(needs.release.outputs.releases)[0].tag }}
