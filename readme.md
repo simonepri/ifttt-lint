@@ -74,7 +74,11 @@ Both hooks pin `--vcs git`: git hooks only ever fire from git and pass git refs,
 
 ### Install the CLI manually
 
-If you prefer running `ifttt-lint` directly, install it with Cargo:
+If you prefer running `ifttt-lint` directly, download a prebuilt binary for your platform from the
+[latest release](https://github.com/simonepri/ifttt-lint/releases/latest). Archives are published for
+linux and macOS on both `x86_64` and `aarch64`, each with a SHA-256 checksum.
+
+Or build it from source with Cargo:
 
 ```bash
 cargo install ifttt-lint
