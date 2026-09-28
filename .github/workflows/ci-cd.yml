@@ -7,7 +7,13 @@
 #   2. Creates or updates a release PR that bumps the version in Cargo.toml and updates the changelog.
 #   3. If a version is already tagged and ready (from a previously merged release PR), publishes to
 #      crates.io and creates a GitHub Release.
-#   4. If step 3 released, binaries attaches prebuilt linux and macOS archives to that release.
+#   4. If step 3 released, binaries attaches prebuilt linux and macOS archives to that release,
+#      and publish-release then takes it out of draft.
+#
+# The release is created as a draft (git_release_draft in release-plz.toml) because GitHub's
+# immutable releases freeze assets at publish time — uploading to an already-published release
+# fails with HTTP 422. A target that fails therefore leaves the release in draft rather than
+# publishing it half-populated, and a draft stays mutable so the job can be re-run.
 #
 # The binaries are built in this same run rather than in a tag-triggered workflow because release-plz
 # tags with GITHUB_TOKEN, and GitHub does not fire workflow events for GITHUB_TOKEN actions — so
@@ -187,3 +193,19 @@ jobs:
           # Without a tag there is nothing to upload to, so build and pack only.
           dry-run: ${{ needs.release.outputs.tag == '' }}
           dry-run-intended: ${{ needs.release.outputs.tag == '' }}
+
+  publish-release:
+    name: Publish release
+    runs-on: ubuntu-latest
+    # Implicitly requires every binaries job to have succeeded, which is what keeps a release
+    # with a missing archive in draft.
+    needs: [release, binaries]
+    if: needs.release.outputs.tag != ''
+    permissions:
+      contents: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.release.outputs.tag }}
+        run: gh release edit "$TAG" --draft=false
