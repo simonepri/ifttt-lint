@@ -289,7 +289,7 @@ pub static LANGUAGES: &[Language] = &[
         extensions: r"\.ya?ml$",
         line_comments: HASH_LINE,
         block_comments: NO_BLOCK,
-        skip_patterns: STRING_SKIP,
+        skip_patterns: YAML_STRING_SKIP,
     },
     // ── ; line ──
     Language {
@@ -580,6 +580,11 @@ const SWIFT_STRING_SKIP: &[SkipPattern] = &[
     },
     SkipPattern::Dynamic(SwiftExtended::try_open),
     SkipPattern::Dynamic(DqString::try_open),
+    SkipPattern::Dynamic(SqString::try_open),
+];
+
+const YAML_STRING_SKIP: &[SkipPattern] = &[
+    SkipPattern::Dynamic(YamlDqString::try_open),
     SkipPattern::Dynamic(SqString::try_open),
 ];
 
@@ -1265,6 +1270,20 @@ impl SqString {
     pub fn try_open(s: &str) -> Option<(SkipClose, usize)> {
         s.starts_with('\'')
             .then_some((SingleLineChar::into_skip_close(b'\''), 1))
+    }
+}
+
+/// YAML double-quoted scalar (`"…"`). Unclosed `"` skips to end-of-line
+/// only, like `SqString`: inside a plain or block scalar (`key: a"`, `>-`)
+/// a `"` is a literal character, so it must not swallow the comments on the
+/// lines that follow.
+#[derive(Debug)]
+pub struct YamlDqString;
+
+impl YamlDqString {
+    pub fn try_open(s: &str) -> Option<(SkipClose, usize)> {
+        s.starts_with('"')
+            .then_some((SingleLineChar::into_skip_close(b'"'), 1))
     }
 }
 

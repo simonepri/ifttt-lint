@@ -709,6 +709,42 @@ fn run_case(case: &CheckCase) {
         expected_errors: Some(&[]),
         ..DEFAULTS
     } },
+    directive_after_unclosed_double_quote_in_plain_scalar_yaml = { CheckCase {
+        files: files! {
+            "test.yaml" => r#"
+                # LINT.IfChange(c)
+                key: a"
+                # LINT.ThenChange(:c)
+            "#,
+        },
+        expected_findings: Some(&[]),
+        expected_errors: Some(&[]),
+        ..DEFAULTS
+    } },
+    directive_after_unclosed_double_quote_in_block_scalar_yaml = { CheckCase {
+        files: files! {
+            "test.yaml" => r#"
+                # LINT.IfChange(c)
+                key: >-
+                  a"
+                # LINT.ThenChange(:c)
+            "#,
+        },
+        expected_findings: Some(&[]),
+        expected_errors: Some(&[]),
+        ..DEFAULTS
+    } },
+    directive_in_double_quoted_string_ignored_yaml = { CheckCase {
+        files: files! {
+            "test.yaml" => r##"
+                a: "# LINT.IfChange"
+                b: "# LINT.ThenChange(//nonexistent.yaml)"
+            "##,
+        },
+        expected_findings: Some(&[]),
+        expected_errors: Some(&[]),
+        ..DEFAULTS
+    } },
     directive_in_triple_quote_ignored_starlark = { CheckCase {
         files: files! {
             "test.bzl" => r#"
